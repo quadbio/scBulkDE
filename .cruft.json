@@ -1,0 +1,43 @@
+{
+  "template": "https://github.com/scverse/cookiecutter-scverse",
+  "commit": "e0b3a742ea5bb960dd2cb052ecd42e8b42f28ba0",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "project_name": "scBulkDE",
+      "package_name": "scbulkde",
+      "project_description": "Performing differential testing on pseudobulked single-cell data",
+      "author_full_name": "Adnan Abouelela",
+      "author_email": "adnan.abouelela@bsse.ethz.ch",
+      "github_user": "AdnanAbouelela",
+      "github_repo": "scBulkDE",
+      "license": "BSD 3-Clause License",
+      "ide_integration": true,
+      "_copy_without_render": [
+        ".github/workflows/build.yaml",
+        ".github/workflows/test.yaml",
+        "docs/_templates/autosummary/**.rst"
+      ],
+      "_exclude_on_template_update": [
+        "CHANGELOG.md",
+        "LICENSE",
+        "README.md",
+        "docs/api.md",
+        "docs/index.md",
+        "docs/notebooks/example.ipynb",
+        "docs/references.bib",
+        "docs/references.md",
+        "src/**",
+        "tests/**"
+      ],
+      "_render_devdocs": false,
+      "_jinja2_env_vars": {
+        "lstrip_blocks": true,
+        "trim_blocks": true
+      },
+      "_template": "https://github.com/scverse/cookiecutter-scverse",
+      "_commit": "e0b3a742ea5bb960dd2cb052ecd42e8b42f28ba0"
+    }
+  },
+  "directory": null
+}
