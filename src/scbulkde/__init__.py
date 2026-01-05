@@ -1,7 +1,24 @@
-from importlib.metadata import version
+"""scbulkde:  Single-cell to bulk differential expression analysis."""
 
-from . import pl, pp, tl
+from importlib.metadata import PackageNotFoundError, version
 
-__all__ = ["pl", "pp", "tl"]
+from scbulkde import pp, tl
+from scbulkde.pp import PseudobulkResult, pseudobulk
+from scbulkde.tl import DEResult, de
 
-__version__ = version("scBulkDE")
+try:
+    __version__ = version("scbulkde")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
+
+__all__ = [
+    # Submodules
+    "pp",
+    "tl",
+    # Classes
+    "PseudobulkResult",
+    "DEResult",
+    # Functions (convenience imports)
+    "pseudobulk",
+    "de",
+]

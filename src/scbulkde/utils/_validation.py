@@ -43,7 +43,7 @@ def validate_adata(
             f"Layer '{layer}' not found in adata.layers.\n"
             f"Available layers: {available if available else 'None (only .X)'}\n"
             f"Hint: If counts are in .X, use layer='X' or run: "
-            f"adata. layers['counts'] = adata.X.copy()"
+            f"adata.layers['counts'] = adata.X.copy()"
         )
 
     _validate_obs_key(adata, group_key, "group_key")

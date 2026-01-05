@@ -31,7 +31,7 @@ class PyDESeq2Engine(DEEngine):
         cooks: bool = True,
         fit_type: Literal["mean", "parametric"] = "mean",
         independent_filter: bool = True,
-        n_cpus: int = 1,
+        n_cpus: int = 16,
         quiet: bool = True,
         **kwargs,
     ) -> pd.DataFrame:

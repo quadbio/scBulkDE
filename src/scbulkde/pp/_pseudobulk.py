@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
 import pandas as pd
 
 from scbulkde.utils import logger, validate_adata, validate_groups
@@ -23,13 +22,14 @@ def pseudobulk(
     query: str,
     reference: str | Sequence[str] = "rest",
     *,
-    layer: str = "X",
+    layer: str | None = None,
     replicate_key: str | None = None,
     batch_key: str | None = None,
-    min_cells: int = 50,
-    min_fraction: float = 0.2,
-    min_coverage: float = 0.8,
-    min_bridging_batches: int = 2,
+    min_cells: int = 10,
+    min_fraction: float = 0.0,
+    min_coverage: float = 0.0,
+    min_bridging_batches: int = 1,
+    mode: str = "sum",
 ) -> PseudobulkResult:
     """Pseudobulk single-cell data for DE analysis.
 
@@ -46,14 +46,14 @@ def pseudobulk(
         If multiple conditions are provided, they are combined into
         a single "reference" group.
     layer
-        Layer containing counts. Use "X" for adata.X.
+        Layer containing counts. If None, uses adata.X.
     replicate_key
         Column defining biological replicates.
         If None and batch_key is None, each condition is collapsed into one sample.
     batch_key
         Column defining batches.
         If replicate_key is None, batches are used as technical replicates.
-        If replicate_key is provided, samples are stratified by batch.
+        If replicate_key is provided, samples are (replicate, batch) combinations.
     min_cells
         Minimum cells required per sample.
     min_fraction
@@ -65,6 +65,8 @@ def pseudobulk(
     min_bridging_batches
         Minimum number of batches that must bridge both conditions
         to include batch in design formula.
+    mode
+        Aggregation mode for pseudobulk. Options: "sum", "mean", "median".
 
     Returns
     -------
@@ -96,7 +98,13 @@ def pseudobulk(
     conditions = ["query", "reference"]
 
     # Identify samples and build design
-    adata_subset, sample_hierarchy, info, design, include_batch = _identify_samples_and_design(
+    (
+        adata_subset,
+        sample_hierarchy,
+        info,
+        design,
+        include_batch,
+    ) = _identify_samples_and_design(
         adata_sub=adata_subset,
         group_key=internal_group_key,
         conditions=conditions,
@@ -120,13 +128,13 @@ def pseudobulk(
         condition_totals=condition_totals,
     )
 
-    # Aggregate counts for valid samples
+    # Aggregate counts using decoupler
     counts, metadata = _aggregate_counts(
         adata_sub=adata_subset,
-        sample_hierarchy=sample_hierarchy,
-        group_key=internal_group_key,
-        batch_key=info["used_batch_key"],
+        sample_key=info["used_replicate_key"],
+        batch_key=info["used_batch_key"] if include_batch else None,
         layer=layer,
+        mode=mode,
     )
 
     # Build contrast (using internal labels)
@@ -150,6 +158,11 @@ def pseudobulk(
         used_batch_key=info["used_batch_key"],
         replicate_min_cells=min_cells,
         replicate_min_fraction=min_fraction,
+        sample_hierarchy=sample_hierarchy,
+        adata_subset=adata_subset,
+        include_batch=include_batch,
+        layer=layer,
+        mode=mode,
     )
 
 
@@ -167,8 +180,9 @@ def _identify_samples_and_design(
     """Identify samples and determine design formula.
 
     Logic:
-    - If replicate_key provided: use as biological replicates, optionally stratify by batch
-    - If only batch_key provided: use batches as technical replicates, check for bridging
+    - If replicate_key provided with batch_key: samples are (replicate, batch) combinations
+    - If only replicate_key: biological replicates, no batch
+    - If only batch_key: batches are used as technical replicates
     - If neither: collapse each condition into single sample
 
     Returns
@@ -179,31 +193,57 @@ def _identify_samples_and_design(
     adata_sub = adata_sub.copy()
     obs = adata_sub.obs
 
-    # Determine sample key and whether to stratify by batch
-    if replicate_key is not None:
+    # Determine mode based on provided keys
+    if replicate_key is not None and batch_key is not None:
+        # Both provided: samples are (replicate, batch) combinations
+        mode = "replicate_and_batch"
         sample_key = replicate_key
-        stratify_by_batch = batch_key is not None
-        batch_is_sample = False
+        stratify_by_batch = True
+    elif replicate_key is not None:
+        # Only replicate: biological replicates, no batch
+        mode = "replicate_only"
+        sample_key = replicate_key
+        stratify_by_batch = False
     elif batch_key is not None:
+        # Only batch: use as technical replicates
+        mode = "batch_only"
         sample_key = batch_key
         stratify_by_batch = False
-        batch_is_sample = True
     else:
+        # Neither: collapse everything
+        mode = "no_replicates"
         sample_key = None
         stratify_by_batch = False
-        batch_is_sample = False
 
-    # Create internal sample column (prepend condition to make unique)
+    # Create internal columns
     internal_sample_key = "_psbulk_sample"
+    internal_batch_key = "_psbulk_batch"
+
+    # Set up batch column
+    if batch_key is not None:
+        adata_sub.obs[internal_batch_key] = obs[batch_key].astype(str)
+        used_batch_key = batch_key
+    else:
+        adata_sub.obs[internal_batch_key] = "_psbulk_no_batch"
+        used_batch_key = internal_batch_key
+
+    # Create sample identifiers (prepend condition to make unique)
     if sample_key is not None:
-        adata_sub.obs[internal_sample_key] = obs[group_key].astype(str) + "_" + obs[sample_key].astype(str)
-
-    # Determine used keys
-    used_replicate_key = internal_sample_key if sample_key is not None else "_psbulk_sample"
-    used_batch_key = batch_key if batch_key is not None else "_psbulk_batch"
-
-    if batch_key is None:
-        adata_sub.obs["_psbulk_batch"] = "_psbulk_no_batch"
+        if stratify_by_batch:
+            # Sample = condition_replicate_batch
+            adata_sub.obs[internal_sample_key] = (
+                obs[group_key].astype(str)
+                + "_"
+                + obs[sample_key].astype(str)
+                + "_"
+                + adata_sub.obs[internal_batch_key].astype(str)
+            )
+        else:
+            # Sample = condition_replicate (or condition_batch if batch_only)
+            adata_sub.obs[internal_sample_key] = obs[group_key].astype(str) + "_" + obs[sample_key].astype(str)
+        used_replicate_key = internal_sample_key
+    else:
+        used_replicate_key = internal_sample_key
 
     sample_hierarchy = {}
     valid_samples_by_condition = {}
@@ -252,18 +292,21 @@ def _identify_samples_and_design(
         for sample_id in valid_samples:
             sample_cells = cond_cells[cond_cells[internal_sample_key] == sample_id]
 
-            if stratify_by_batch and cond not in collapsed_conditions:
-                sample_hierarchy[cond][sample_id] = {}
-                for batch_val, batch_group in sample_cells.groupby(batch_key, observed=True):
-                    if len(batch_group) > 0:
-                        sample_hierarchy[cond][sample_id][batch_val] = batch_group.index.tolist()
+            if cond in collapsed_conditions:
+                # Collapsed - no batch info
+                sample_hierarchy[cond][sample_id] = {"_psbulk_no_batch": sample_cells.index.tolist()}
+            elif mode == "replicate_and_batch":
+                # Already stratified by batch in sample_id
+                # Extract batch from obs
+                batch_val = sample_cells[internal_batch_key].iloc[0]
+                sample_hierarchy[cond][sample_id] = {batch_val: sample_cells.index.tolist()}
+            elif mode == "batch_only":
+                # Batch is the sample, store original batch name for bridging
+                original_batch = sample_id.replace(f"{cond}_", "", 1)
+                sample_hierarchy[cond][sample_id] = {original_batch: sample_cells.index.tolist()}
             else:
-                # When batch_is_sample, store original batch name for bridging check
-                if batch_is_sample and cond not in collapsed_conditions:
-                    original_batch = sample_id.replace(f"{cond}_", "", 1)
-                    sample_hierarchy[cond][sample_id] = {original_batch: sample_cells.index.tolist()}
-                else:
-                    sample_hierarchy[cond][sample_id] = {"_psbulk_no_batch": sample_cells.index.tolist()}
+                # replicate_only - no real batch
+                sample_hierarchy[cond][sample_id] = {"_psbulk_no_batch": sample_cells.index.tolist()}
 
     # Filter adata_sub to only include cells in valid samples
     all_valid_samples = [s for samples in valid_samples_by_condition.values() for s in samples]
@@ -273,36 +316,22 @@ def _identify_samples_and_design(
     include_batch = False
     bridging_batches = []
 
-    # Case 1: replicate_key provided with batch_key (stratify by batch)
-    if stratify_by_batch and batch_key is not None:
+    # Only consider batch if we have real batch info and no collapsed conditions
+    if batch_key is not None and not any(c in collapsed_conditions for c in conditions):
         batches_per_cond = {}
         for cond in conditions:
-            if cond not in collapsed_conditions:
-                batches_per_cond[cond] = {b for samples in sample_hierarchy[cond].values() for b in samples.keys()}
-            else:
-                batches_per_cond[cond] = set()
+            batches_per_cond[cond] = {
+                batch_name
+                for sample_dict in sample_hierarchy[cond].values()
+                for batch_name in sample_dict.keys()
+                if batch_name != "_psbulk_no_batch"
+            }
 
-        # Find batches present in all conditions
+        # Find bridging batches (present in all conditions)
         all_batch_sets = [batches_per_cond[c] for c in conditions if batches_per_cond[c]]
-        if all_batch_sets:
+        if len(all_batch_sets) == len(conditions):
             bridging_batches = list(set.intersection(*all_batch_sets))
-        include_batch = len(bridging_batches) >= min_bridging_batches
-
-    # Case 2: only batch_key provided (batch IS the sample)
-    elif batch_is_sample and batch_key is not None:
-        batches_per_cond = {}
-        for cond in conditions:
-            if cond not in collapsed_conditions:
-                batches_per_cond[cond] = {
-                    batch_name for sample_dict in sample_hierarchy[cond].values() for batch_name in sample_dict.keys()
-                }
-            else:
-                batches_per_cond[cond] = set()
-
-        all_batch_sets = [batches_per_cond[c] for c in conditions if batches_per_cond[c]]
-        if all_batch_sets:
-            bridging_batches = list(set.intersection(*all_batch_sets))
-        include_batch = len(bridging_batches) >= min_bridging_batches
+            include_batch = len(bridging_batches) >= min_bridging_batches
 
     # Determine design formula
     if include_batch:
@@ -316,15 +345,14 @@ def _identify_samples_and_design(
         "used_replicate_key": used_replicate_key,
         "used_batch_key": used_batch_key,
         "bridging_batches": bridging_batches,
-        "is_technical_replicates": batch_is_sample,
+        "mode": mode,
     }
 
+    logger.debug(f"Mode: {mode}")
     logger.debug(f"Design formula: {design}")
     logger.debug(f"Valid samples: {valid_samples_by_condition}")
     if collapsed_conditions:
         logger.warning(f"Collapsed conditions (insufficient replicates): {collapsed_conditions}")
-    if info["is_technical_replicates"]:
-        logger.info("Using batches as technical replicates")
     if bridging_batches:
         logger.debug(f"Bridging batches: {bridging_batches}")
 
@@ -361,63 +389,61 @@ def _compute_sample_stats(
 
 def _aggregate_counts(
     adata_sub: ad.AnnData,
-    sample_hierarchy: dict,
-    group_key: str,
-    batch_key: str,
-    layer: str,
+    sample_key: str,
+    batch_key: str | None,
+    layer: str | None,
+    mode: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Aggregate counts by sample."""
-    # Get counts matrix
-    if layer == "X":
-        X = adata_sub.X
-    else:
-        X = adata_sub.layers[layer]
+    """Aggregate counts by sample using decoupler.
 
-    # Convert to dense if sparse
+    Parameters
+    ----------
+    adata_sub
+        Subsetted AnnData with valid samples only.
+    sample_key
+        Column in obs containing sample identifiers.
+    batch_key
+        Column in obs containing batch identifiers (for grouping).
+        If None, no grouping is applied.
+    layer
+        Layer to use for counts. If None, uses adata.X.
+    mode
+        Aggregation mode: "sum", "mean", or "median".
+
+    Returns
+    -------
+    tuple
+        (counts DataFrame, metadata DataFrame)
+    """
+    import decoupler as dc
+
+    # Run decoupler pseudobulk
+    adata_pb = dc.pp.pseudobulk(
+        adata_sub,
+        sample_col=sample_key,
+        groups_col=batch_key,
+        layer=layer,
+        mode=mode,
+        empty=False,
+        verbose=False,
+    )
+
+    # Filter out empty samples
+    adata_pb = adata_pb[(adata_pb.obs["psbulk_cells"] > 0) & (adata_pb.obs["psbulk_counts"] > 0)].copy()
+
+    # Extract counts
+    X = adata_pb.X
     if hasattr(X, "toarray"):
         X = X.toarray()
 
-    # Create mapping from obs index to row number
-    obs_to_row = {obs_name: i for i, obs_name in enumerate(adata_sub.obs_names)}
-
-    counts_list = []
-    metadata_rows = []
-
-    for cond, samples in sample_hierarchy.items():
-        for sample_id, batches in samples.items():
-            for batch_id, cell_indices in batches.items():
-                # Get row indices for these cells
-                row_indices = [obs_to_row[idx] for idx in cell_indices if idx in obs_to_row]
-
-                if not row_indices:
-                    continue
-
-                # Sum counts
-                sample_counts = X[row_indices].sum(axis=0)
-                counts_list.append(np.asarray(sample_counts).flatten())
-
-                # Sample name includes batch if stratified
-                if len(batches) > 1 or batch_id != "_psbulk_no_batch":
-                    full_sample_id = f"{sample_id}_{batch_id}"
-                else:
-                    full_sample_id = sample_id
-
-                metadata_rows.append(
-                    {
-                        "sample": full_sample_id,
-                        group_key: cond,
-                        batch_key: batch_id,
-                    }
-                )
-
-    sample_names = [row["sample"] for row in metadata_rows]
-
     counts = pd.DataFrame(
-        counts_list,
-        index=sample_names,
-        columns=adata_sub.var_names,
+        X,
+        index=adata_pb.obs_names,
+        columns=adata_pb.var_names,
     )
 
-    metadata = pd.DataFrame(metadata_rows).set_index("sample")
+    # Extract metadata (drop decoupler's QC columns for cleaner output)
+    metadata_cols = [col for col in adata_pb.obs.columns if not col.startswith("psbulk_")]
+    metadata = adata_pb.obs[metadata_cols].copy()
 
     return counts, metadata

@@ -44,11 +44,23 @@ class PseudobulkResult:
     used_replicate_key
         Replicate key used (original or auto-generated).
     used_batch_key
-        Batch key used (original or auto-generated "_batch_1").
+        Batch key used (original or auto-generated).
     replicate_min_cells
         Minimum cells threshold used for filtering.
     replicate_min_fraction
         Minimum fraction threshold used for filtering.
+    sample_hierarchy
+        Nested dict: {condition -> sample_id -> batch_id -> [cell_indices]}.
+        Used for pseudoreplicate generation.
+    adata_subset
+        Subsetted AnnData containing only valid cells.
+        Used for pseudoreplicate generation.
+    include_batch
+        Whether batch is included in design formula.
+    layer
+        Layer used for counts.
+    mode
+        Aggregation mode used ("sum", "mean", "median").
     """
 
     counts: pd.DataFrame
@@ -65,6 +77,11 @@ class PseudobulkResult:
     used_batch_key: str
     replicate_min_cells: int
     replicate_min_fraction: float
+    sample_hierarchy: dict[str, dict[str, dict[str, list]]]
+    adata_subset: object  # ad.AnnData, but avoid import for dataclass
+    include_batch: bool
+    layer: str | None
+    mode: str
 
     @property
     def n_samples(self) -> int:
@@ -81,12 +98,12 @@ class PseudobulkResult:
         n_total = len(self.sample_stats)
         return (
             f"PseudobulkResult(\n"
-            f" n_samples={n_valid}/{n_total} (valid/total),\n"
-            f" n_genes={self.n_genes},\n"
-            f" design='{self.design}',\n"
-            f" query='{self.query}',\n"
-            f" reference='{self.reference}',\n"
-            f" collapsed_conditions={self.collapsed_conditions}\n"
+            f"  n_samples={n_valid}/{n_total} (valid/total),\n"
+            f"  n_genes={self.n_genes},\n"
+            f"  design='{self.design}',\n"
+            f"  query='{self.query}',\n"
+            f"  reference='{self.reference}',\n"
+            f"  collapsed_conditions={self.collapsed_conditions}\n"
             f")"
         )
 
@@ -95,7 +112,7 @@ class PseudobulkResult:
 
         Returns
         -------
-        pd. DataFrame
+        pd.DataFrame
             Sample statistics with n_cells, fraction, and validity per sample.
         """
         return self.sample_stats.copy()
