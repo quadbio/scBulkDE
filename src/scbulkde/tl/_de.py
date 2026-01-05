@@ -47,7 +47,7 @@ def de(
     else:
         if group_key is None or query is None:
             raise ValueError(
-                "When passing AnnData, 'group_key' and 'query' are required.  "
+                "When passing AnnData, 'group_key' and 'query' are required. "
                 "Alternatively, run scb.pp.pseudobulk() first and pass the result."
             )
 
@@ -136,9 +136,7 @@ def _run_de_direct(
         **engine_kwargs,
     )
 
-    logger.info(
-        f"DE complete:  {len(results)} genes tested, {(results['padj'] < 0.05).sum()} significant (padj < 0.05)"
-    )
+    logger.info(f"DE complete: {len(results)} genes tested, {(results['padj'] < 0.05).sum()} significant (padj < 0.05)")
 
     return DEResult(
         results=results,
@@ -165,6 +163,39 @@ def _run_de_with_pseudoreplicates(
     repetition_results = {}
     repetition_stats = {}
 
+    # === PRE-COMPUTE EXPENSIVE OPERATIONS ONCE ===
+    adata_sub = pb_result.adata_subset
+    layer = pb_result.layer
+
+    # Get count matrix ONCE
+    if layer is not None:
+        X_full = adata_sub.layers[layer]
+    else:
+        X_full = adata_sub.X
+
+    # Convert to dense array ONCE (if sparse)
+    if hasattr(X_full, "toarray"):
+        X_full = X_full.toarray()
+
+    # Build index mapping ONCE
+    obs_idx_to_pos = {idx: pos for pos, idx in enumerate(adata_sub.obs_names)}
+    var_names = list(adata_sub.var_names)
+
+    # Pre-compute base stats rows ONCE
+    base_stats_rows = []
+    for _, row in pb_result.sample_stats[pb_result.sample_stats["is_valid"]].iterrows():
+        base_stats_rows.append(
+            {
+                "condition": row["condition"],
+                "batch": row["batch"],
+                "psbulk_sample": row["psbulk_sample"],
+                "n_cells": row["n_cells"],
+                "fraction": row["fraction"],
+                "is_pseudoreplicate": False,
+                "source_sample": None,
+            }
+        )
+
     for rep_idx in range(n_repetitions):
         logger.debug(f"Repetition {rep_idx + 1}/{n_repetitions}")
 
@@ -173,6 +204,10 @@ def _run_de_with_pseudoreplicates(
             required_samples=required_samples,
             resampling_fraction=resampling_fraction,
             rng=rng,
+            X_full=X_full,
+            obs_idx_to_pos=obs_idx_to_pos,
+            var_names=var_names,
+            base_stats_rows=base_stats_rows,
         )
 
         try:
@@ -190,7 +225,7 @@ def _run_de_with_pseudoreplicates(
             continue
 
     if not repetition_results:
-        raise RuntimeError("All repetitions failed.  Check your data and parameters.")
+        raise RuntimeError("All repetitions failed. Check your data and parameters.")
 
     aggregated_results = _aggregate_de_results(
         results=repetition_results,
@@ -222,47 +257,23 @@ def _generate_pseudoreplicates_for_repetition(
     required_samples: dict[str, int],
     resampling_fraction: float,
     rng: np.random.Generator,
+    X_full: np.ndarray,
+    obs_idx_to_pos: dict[str, int],
+    var_names: list[str],
+    base_stats_rows: list[dict],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Generate pseudoreplicates by sampling cells and summing counts directly."""
-    adata_sub = pb_result.adata_subset
     sample_hierarchy = pb_result.sample_hierarchy
     include_batch = pb_result.include_batch
-    layer = pb_result.layer
     group_key = pb_result.contrast[0]
     batch_key = pb_result.used_batch_key if include_batch else None
 
-    # Start with existing pseudobulk counts and metadata
-    all_counts = [pb_result.counts]
-    all_metadata = [pb_result.metadata]
-    stats_rows = []
-
-    # Copy stats for existing valid samples
-    for _, row in pb_result.sample_stats[pb_result.sample_stats["is_valid"]].iterrows():
-        stats_rows.append(
-            {
-                "condition": row["condition"],
-                "batch": row["batch"],
-                "psbulk_sample": row["psbulk_sample"],
-                "n_cells": row["n_cells"],
-                "fraction": row["fraction"],
-                "is_pseudoreplicate": False,
-                "source_sample": None,
-            }
-        )
-
-    # Get the count matrix once (avoid repeated access)
-    if layer is not None:
-        X_full = adata_sub.layers[layer]
-    else:
-        X_full = adata_sub.X
-
-    # Convert to array if sparse
-    if hasattr(X_full, "toarray"):
-        X_full = X_full.toarray()
-
-    # Get obs index to integer position mapping for fast slicing
-    obs_idx_to_pos = {idx: pos for pos, idx in enumerate(adata_sub.obs_names)}
-    var_names = adata_sub.var_names
+    # Collect pseudoreplicate data as lists (avoid DataFrame creation in loop)
+    pr_counts_list = []
+    pr_names = []
+    pr_meta_conditions = []
+    pr_meta_batches = []
+    stats_rows = list(base_stats_rows)  # Copy base stats
 
     for condition, n_needed in required_samples.items():
         if n_needed <= 0:
@@ -284,48 +295,25 @@ def _generate_pseudoreplicates_for_repetition(
 
             # Sample cells
             n_sample = max(1, int(len(obs_names) * resampling_fraction))
-            sampled_cells = list(rng.choice(obs_names, size=n_sample, replace=False))
+            sampled_cells = rng.choice(obs_names, size=n_sample, replace=False)
 
-            # Get integer positions for sampled cells
+            # Get integer positions and sum counts directly
             sampled_positions = [obs_idx_to_pos[cell] for cell in sampled_cells]
-
-            # Sum counts directly
             counts_sum = X_full[sampled_positions, :].sum(axis=0)
-
-            # Ensure it's a 1D array
-            if hasattr(counts_sum, "A1"):
-                counts_sum = counts_sum.A1
-            counts_sum = np.asarray(counts_sum).flatten()
 
             pseudo_sample_name = f"{source_sample}_pr_{i + 1}"
 
-            # Create counts DataFrame for this pseudoreplicate
-            pseudo_counts = pd.DataFrame(
-                [counts_sum],
-                index=[pseudo_sample_name],
-                columns=var_names,
-            )
-            all_counts.append(pseudo_counts)
+            # Append to lists (no DataFrame creation here)
+            pr_counts_list.append(counts_sum)
+            pr_names.append(pseudo_sample_name)
+            pr_meta_conditions.append(condition)
 
             # Determine batch assignment
             if include_batch:
-                if len(batches) > 1:
-                    assigned_batch = source_batch
-                else:
-                    assigned_batch = list(batches.keys())[0]
+                assigned_batch = source_batch if len(batches) > 1 else list(batches.keys())[0]
             else:
                 assigned_batch = "_psbulk_no_batch"
-
-            # Create metadata row
-            meta_row = {group_key: condition}
-            if include_batch:
-                meta_row[batch_key] = assigned_batch
-
-            pseudo_metadata = pd.DataFrame(
-                [meta_row],
-                index=[pseudo_sample_name],
-            )
-            all_metadata.append(pseudo_metadata)
+            pr_meta_batches.append(assigned_batch)
 
             stats_rows.append(
                 {
@@ -339,8 +327,22 @@ def _generate_pseudoreplicates_for_repetition(
                 }
             )
 
-    combined_counts = pd.concat(all_counts, axis=0)
-    combined_metadata = pd.concat(all_metadata, axis=0)
+    # Build DataFrames ONCE at the end
+    if pr_counts_list:
+        pr_counts_array = np.vstack(pr_counts_list)
+        pr_counts_df = pd.DataFrame(pr_counts_array, index=pr_names, columns=var_names)
+        combined_counts = pd.concat([pb_result.counts, pr_counts_df], axis=0)
+
+        # Build metadata
+        pr_meta_dict = {group_key: pr_meta_conditions}
+        if include_batch:
+            pr_meta_dict[batch_key] = pr_meta_batches
+        pr_metadata_df = pd.DataFrame(pr_meta_dict, index=pr_names)
+        combined_metadata = pd.concat([pb_result.metadata, pr_metadata_df], axis=0)
+    else:
+        combined_counts = pb_result.counts
+        combined_metadata = pb_result.metadata
+
     stats_df = pd.DataFrame(stats_rows)
 
     return combined_counts, combined_metadata, stats_df
