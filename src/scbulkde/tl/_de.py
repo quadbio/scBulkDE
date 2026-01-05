@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import decoupler as dc
 import numpy as np
 import pandas as pd
 
@@ -48,7 +47,7 @@ def de(
     else:
         if group_key is None or query is None:
             raise ValueError(
-                "When passing AnnData, 'group_key' and 'query' are required. "
+                "When passing AnnData, 'group_key' and 'query' are required.  "
                 "Alternatively, run scb.pp.pseudobulk() first and pass the result."
             )
 
@@ -137,7 +136,9 @@ def _run_de_direct(
         **engine_kwargs,
     )
 
-    logger.info(f"DE complete: {len(results)} genes tested, {(results['padj'] < 0.05).sum()} significant (padj < 0.05)")
+    logger.info(
+        f"DE complete:  {len(results)} genes tested, {(results['padj'] < 0.05).sum()} significant (padj < 0.05)"
+    )
 
     return DEResult(
         results=results,
@@ -189,7 +190,7 @@ def _run_de_with_pseudoreplicates(
             continue
 
     if not repetition_results:
-        raise RuntimeError("All repetitions failed. Check your data and parameters.")
+        raise RuntimeError("All repetitions failed.  Check your data and parameters.")
 
     aggregated_results = _aggregate_de_results(
         results=repetition_results,
@@ -222,18 +223,20 @@ def _generate_pseudoreplicates_for_repetition(
     resampling_fraction: float,
     rng: np.random.Generator,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Generate pseudoreplicates by sampling cells and summing counts directly."""
     adata_sub = pb_result.adata_subset
     sample_hierarchy = pb_result.sample_hierarchy
     include_batch = pb_result.include_batch
     layer = pb_result.layer
-    mode = pb_result.mode
     group_key = pb_result.contrast[0]
     batch_key = pb_result.used_batch_key if include_batch else None
 
+    # Start with existing pseudobulk counts and metadata
     all_counts = [pb_result.counts]
     all_metadata = [pb_result.metadata]
     stats_rows = []
 
+    # Copy stats for existing valid samples
     for _, row in pb_result.sample_stats[pb_result.sample_stats["is_valid"]].iterrows():
         stats_rows.append(
             {
@@ -246,6 +249,20 @@ def _generate_pseudoreplicates_for_repetition(
                 "source_sample": None,
             }
         )
+
+    # Get the count matrix once (avoid repeated access)
+    if layer is not None:
+        X_full = adata_sub.layers[layer]
+    else:
+        X_full = adata_sub.X
+
+    # Convert to array if sparse
+    if hasattr(X_full, "toarray"):
+        X_full = X_full.toarray()
+
+    # Get obs index to integer position mapping for fast slicing
+    obs_idx_to_pos = {idx: pos for pos, idx in enumerate(adata_sub.obs_names)}
+    var_names = adata_sub.var_names
 
     for condition, n_needed in required_samples.items():
         if n_needed <= 0:
@@ -265,38 +282,32 @@ def _generate_pseudoreplicates_for_repetition(
             else:
                 obs_names = [cell for cells in batches.values() for cell in cells]
 
-            # Sample cells ONCE
+            # Sample cells
             n_sample = max(1, int(len(obs_names) * resampling_fraction))
             sampled_cells = list(rng.choice(obs_names, size=n_sample, replace=False))
 
-            # Create sampled adata and pseudobulk directly
+            # Get integer positions for sampled cells
+            sampled_positions = [obs_idx_to_pos[cell] for cell in sampled_cells]
+
+            # Sum counts directly
+            counts_sum = X_full[sampled_positions, :].sum(axis=0)
+
+            # Ensure it's a 1D array
+            if hasattr(counts_sum, "A1"):
+                counts_sum = counts_sum.A1
+            counts_sum = np.asarray(counts_sum).flatten()
+
             pseudo_sample_name = f"{source_sample}_pr_{i + 1}"
-            adata_sampled = adata_sub[sampled_cells].copy()
-            adata_sampled.obs[pb_result.used_replicate_key] = pseudo_sample_name
 
-            # Pseudobulk the sampled cells directly (no second sampling!)
-            adata_pr = dc.pp.pseudobulk(
-                adata_sampled,
-                sample_col=pb_result.used_replicate_key,
-                groups_col=batch_key,
-                layer=layer,
-                mode=mode,
-                verbose=False,
-            )
-
-            adata_pr.obs_names = [pseudo_sample_name]
-
-            X = adata_pr.X
-            if hasattr(X, "toarray"):
-                X = X.toarray()
-
+            # Create counts DataFrame for this pseudoreplicate
             pseudo_counts = pd.DataFrame(
-                X,
+                [counts_sum],
                 index=[pseudo_sample_name],
-                columns=adata_pr.var_names,
+                columns=var_names,
             )
             all_counts.append(pseudo_counts)
 
+            # Determine batch assignment
             if include_batch:
                 if len(batches) > 1:
                     assigned_batch = source_batch
@@ -305,6 +316,7 @@ def _generate_pseudoreplicates_for_repetition(
             else:
                 assigned_batch = "_psbulk_no_batch"
 
+            # Create metadata row
             meta_row = {group_key: condition}
             if include_batch:
                 meta_row[batch_key] = assigned_batch
