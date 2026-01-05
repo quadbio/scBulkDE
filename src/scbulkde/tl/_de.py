@@ -168,47 +168,103 @@ def _run_de_with_pseudoreplicates(
     layer = pb_result.layer
 
     # Get count matrix ONCE
-    if layer is not None:
-        X_full = adata_sub.layers[layer]
-    else:
-        X_full = adata_sub.X
+    X_full = adata_sub.layers[layer] if layer is not None else adata_sub.X
 
     # Convert to dense array ONCE (if sparse)
     if hasattr(X_full, "toarray"):
         X_full = X_full.toarray()
 
-    # Build index mapping ONCE
-    obs_idx_to_pos = {idx: pos for pos, idx in enumerate(adata_sub.obs_names)}
+    # Build index mapping as numpy array for vectorized lookup
+    obs_names_array = np.array(adata_sub.obs_names)
+    obs_idx_to_pos = {idx: pos for pos, idx in enumerate(obs_names_array)}
     var_names = list(adata_sub.var_names)
+    n_genes = len(var_names)
 
-    # Pre-compute base stats rows ONCE
-    base_stats_rows = []
-    for _, row in pb_result.sample_stats[pb_result.sample_stats["is_valid"]].iterrows():
-        base_stats_rows.append(
-            {
-                "condition": row["condition"],
-                "batch": row["batch"],
-                "psbulk_sample": row["psbulk_sample"],
-                "n_cells": row["n_cells"],
-                "fraction": row["fraction"],
-                "is_pseudoreplicate": False,
-                "source_sample": None,
-            }
-        )
+    # Pre-extract base counts as numpy array
+    base_counts = pb_result.counts.values
+    base_sample_names = list(pb_result.counts.index)
+    n_base_samples = len(base_sample_names)
+
+    # Pre-extract base metadata
+    base_metadata = pb_result.metadata
+    group_key = pb_result.contrast[0]
+    include_batch = pb_result.include_batch
+    batch_key = pb_result.used_batch_key if include_batch else None
+
+    # Calculate total pseudoreplicates needed
+    total_pr = sum(max(0, n) for n in required_samples.values())
+    n_total_samples = n_base_samples + total_pr
+
+    # Pre-allocate combined counts array (reused each repetition)
+    combined_counts_array = np.empty((n_total_samples, n_genes), dtype=base_counts.dtype)
+    combined_counts_array[:n_base_samples, :] = base_counts
+
+    # Pre-compute sample hierarchy info for fast access
+    sample_hierarchy = pb_result.sample_hierarchy
+    pr_info = []  # List of (condition, sample_ids, batches_dict) for conditions needing PRs
+    for condition, n_needed in required_samples.items():
+        if n_needed > 0:
+            sample_ids = list(sample_hierarchy.get(condition, {}).keys())
+            if sample_ids:
+                pr_info.append((condition, n_needed, sample_ids, sample_hierarchy[condition]))
 
     for rep_idx in range(n_repetitions):
         logger.debug(f"Repetition {rep_idx + 1}/{n_repetitions}")
 
-        rep_counts, rep_metadata, rep_stats = _generate_pseudoreplicates_for_repetition(
-            pb_result=pb_result,
-            required_samples=required_samples,
-            resampling_fraction=resampling_fraction,
-            rng=rng,
-            X_full=X_full,
-            obs_idx_to_pos=obs_idx_to_pos,
-            var_names=var_names,
-            base_stats_rows=base_stats_rows,
+        # Generate pseudoreplicates directly into pre-allocated array
+        pr_names = []
+        pr_meta_conditions = []
+        pr_meta_batches = []
+        pr_idx = n_base_samples
+
+        for condition, n_needed, sample_ids, cond_hierarchy in pr_info:
+            for i in range(n_needed):
+                source_sample = rng.choice(sample_ids)
+                batches = cond_hierarchy[source_sample]
+
+                if include_batch and len(batches) > 1:
+                    source_batch = rng.choice(list(batches.keys()))
+                    obs_names = batches[source_batch]
+                else:
+                    obs_names = [cell for cells in batches.values() for cell in cells]
+
+                # Sample cells
+                n_sample = max(1, int(len(obs_names) * resampling_fraction))
+                sampled_cells = rng.choice(obs_names, size=n_sample, replace=False)
+
+                # Vectorized position lookup and sum
+                sampled_positions = np.array([obs_idx_to_pos[c] for c in sampled_cells])
+                combined_counts_array[pr_idx, :] = X_full[sampled_positions, :].sum(axis=0)
+
+                pseudo_sample_name = f"{source_sample}_pr_{i + 1}"
+                pr_names.append(pseudo_sample_name)
+                pr_meta_conditions.append(condition)
+
+                if include_batch:
+                    assigned_batch = source_batch if len(batches) > 1 else list(batches.keys())[0]
+                else:
+                    assigned_batch = "_psbulk_no_batch"
+                pr_meta_batches.append(assigned_batch)
+
+                pr_idx += 1
+
+        # Build DataFrames efficiently
+        all_sample_names = base_sample_names + pr_names
+        rep_counts = pd.DataFrame(
+            combined_counts_array,
+            index=all_sample_names,
+            columns=var_names,
         )
+
+        # Build metadata by extending base
+        if pr_names:
+            pr_meta_dict = {group_key: pr_meta_conditions}
+            if include_batch:
+                pr_meta_dict[batch_key] = pr_meta_batches
+            pr_metadata_df = pd.DataFrame(pr_meta_dict, index=pr_names)
+            rep_metadata = pd.concat([base_metadata, pr_metadata_df], axis=0)
+        else:
+            rep_metadata = base_metadata
 
         try:
             rep_result = de_engine.run(
@@ -218,8 +274,7 @@ def _run_de_with_pseudoreplicates(
                 contrast=pb_result.contrast,
                 **engine_kwargs,
             )
-            repetition_results[str(rep_idx)] = rep_result
-            repetition_stats[str(rep_idx)] = rep_stats
+            repetition_results[rep_idx] = rep_result
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Repetition {rep_idx + 1} failed: {e}")
             continue
@@ -247,127 +302,58 @@ def _run_de_with_pseudoreplicates(
         engine=engine_name,
         used_pseudoreplicates=True,
         n_repetitions=n_successful,
-        repetition_results=repetition_results,
+        repetition_results={str(k): v for k, v in repetition_results.items()},
         repetition_stats=repetition_stats,
     )
 
 
-def _generate_pseudoreplicates_for_repetition(
-    pb_result: PseudobulkResult,
-    required_samples: dict[str, int],
-    resampling_fraction: float,
-    rng: np.random.Generator,
-    X_full: np.ndarray,
-    obs_idx_to_pos: dict[str, int],
-    var_names: list[str],
-    base_stats_rows: list[dict],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Generate pseudoreplicates by sampling cells and summing counts directly."""
-    sample_hierarchy = pb_result.sample_hierarchy
-    include_batch = pb_result.include_batch
-    group_key = pb_result.contrast[0]
-    batch_key = pb_result.used_batch_key if include_batch else None
-
-    # Collect pseudoreplicate data as lists (avoid DataFrame creation in loop)
-    pr_counts_list = []
-    pr_names = []
-    pr_meta_conditions = []
-    pr_meta_batches = []
-    stats_rows = list(base_stats_rows)  # Copy base stats
-
-    for condition, n_needed in required_samples.items():
-        if n_needed <= 0:
-            continue
-
-        sample_ids = list(sample_hierarchy.get(condition, {}).keys())
-        if not sample_ids:
-            continue
-
-        for i in range(n_needed):
-            source_sample = rng.choice(sample_ids)
-            batches = sample_hierarchy[condition][source_sample]
-
-            if include_batch and len(batches) > 1:
-                source_batch = rng.choice(list(batches.keys()))
-                obs_names = batches[source_batch]
-            else:
-                obs_names = [cell for cells in batches.values() for cell in cells]
-
-            # Sample cells
-            n_sample = max(1, int(len(obs_names) * resampling_fraction))
-            sampled_cells = rng.choice(obs_names, size=n_sample, replace=False)
-
-            # Get integer positions and sum counts directly
-            sampled_positions = [obs_idx_to_pos[cell] for cell in sampled_cells]
-            counts_sum = X_full[sampled_positions, :].sum(axis=0)
-
-            pseudo_sample_name = f"{source_sample}_pr_{i + 1}"
-
-            # Append to lists (no DataFrame creation here)
-            pr_counts_list.append(counts_sum)
-            pr_names.append(pseudo_sample_name)
-            pr_meta_conditions.append(condition)
-
-            # Determine batch assignment
-            if include_batch:
-                assigned_batch = source_batch if len(batches) > 1 else list(batches.keys())[0]
-            else:
-                assigned_batch = "_psbulk_no_batch"
-            pr_meta_batches.append(assigned_batch)
-
-            stats_rows.append(
-                {
-                    "condition": condition,
-                    "batch": assigned_batch,
-                    "psbulk_sample": pseudo_sample_name,
-                    "n_cells": n_sample,
-                    "fraction": n_sample / pb_result.condition_totals.get(condition, 1),
-                    "is_pseudoreplicate": True,
-                    "source_sample": source_sample,
-                }
-            )
-
-    # Build DataFrames ONCE at the end
-    if pr_counts_list:
-        pr_counts_array = np.vstack(pr_counts_list)
-        pr_counts_df = pd.DataFrame(pr_counts_array, index=pr_names, columns=var_names)
-        combined_counts = pd.concat([pb_result.counts, pr_counts_df], axis=0)
-
-        # Build metadata
-        pr_meta_dict = {group_key: pr_meta_conditions}
-        if include_batch:
-            pr_meta_dict[batch_key] = pr_meta_batches
-        pr_metadata_df = pd.DataFrame(pr_meta_dict, index=pr_names)
-        combined_metadata = pd.concat([pb_result.metadata, pr_metadata_df], axis=0)
-    else:
-        combined_counts = pb_result.counts
-        combined_metadata = pb_result.metadata
-
-    stats_df = pd.DataFrame(stats_rows)
-
-    return combined_counts, combined_metadata, stats_df
-
-
 def _aggregate_de_results(
-    results: dict[str, pd.DataFrame],
+    results: dict[int, pd.DataFrame],
     min_list_overlap: float,
 ) -> pd.DataFrame:
+    """Aggregate DE results efficiently using numpy operations."""
     n_runs = len(results)
     min_occurrences = int(np.ceil(min_list_overlap * n_runs))
 
-    gene_counts = pd.concat([df.reset_index() for df in results.values()]).groupby("index").size()
-    keep_genes = gene_counts[gene_counts >= min_occurrences].index
+    # Get all unique genes and count occurrences
+    all_genes = {}
+    for df in results.values():
+        for gene in df.index:
+            all_genes[gene] = all_genes.get(gene, 0) + 1
 
-    if len(keep_genes) == 0:
+    # Filter genes by occurrence threshold
+    keep_genes = [g for g, count in all_genes.items() if count >= min_occurrences]
+
+    if not keep_genes:
         logger.warning(
             f"No genes passed min_list_overlap threshold ({min_list_overlap:.0%}). "
             "Returning all genes with aggregated stats."
         )
-        keep_genes = gene_counts.index
+        keep_genes = list(all_genes.keys())
 
-    all_results = pd.concat(results.values())
-    all_results = all_results.loc[all_results.index.isin(keep_genes)]
+    keep_genes_set = set(keep_genes)
 
-    aggregated = all_results.groupby(all_results.index).mean(numeric_only=True)
+    # Pre-allocate arrays for aggregation
+    numeric_cols = None
+    gene_sums = {}
+    gene_counts = {}
+
+    for df in results.values():
+        if numeric_cols is None:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+
+        for gene in df.index:
+            if gene in keep_genes_set:
+                row_values = df.loc[gene, numeric_cols].values
+                if gene not in gene_sums:
+                    gene_sums[gene] = row_values.astype(float)
+                    gene_counts[gene] = 1
+                else:
+                    gene_sums[gene] += row_values
+                    gene_counts[gene] += 1
+
+    # Compute means
+    result_data = {gene: gene_sums[gene] / gene_counts[gene] for gene in keep_genes}
+    aggregated = pd.DataFrame.from_dict(result_data, orient="index", columns=numeric_cols)
 
     return aggregated
