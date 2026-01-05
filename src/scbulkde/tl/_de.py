@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import decoupler as dc
 import numpy as np
 import pandas as pd
 
@@ -35,8 +36,8 @@ def de(
     mode: str = "sum",
     min_samples: int = 3,
     n_repetitions: int = 10,
-    resampling_fraction: float = 0.7,
-    min_list_overlap: float = 0.5,
+    resampling_fraction: float = 0.6,
+    min_list_overlap: float = 0.9,
     seed: int = 42,
     engine: str = "pydeseq2",
     **engine_kwargs,
@@ -215,32 +216,6 @@ def _run_de_with_pseudoreplicates(
     )
 
 
-def _generate_pseudoreplicate(
-    adata_sub: ad.AnnData,
-    obs_names: list[str],
-    sample_key: str,
-    batch_key: str | None,
-    resampling_fraction: float,
-    rng: np.random.Generator,
-    layer: str | None,
-    mode: str,
-) -> ad.AnnData:
-    import decoupler as dc
-
-    n_sample = max(1, int(len(obs_names) * resampling_fraction))
-    sampled_cells = rng.choice(obs_names, size=n_sample, replace=False)
-    adata_sampled = adata_sub[sampled_cells].copy()
-
-    return dc.pp.pseudobulk(
-        adata_sampled,
-        sample_col=sample_key,
-        groups_col=batch_key,
-        layer=layer,
-        mode=mode,
-        verbose=False,
-    )
-
-
 def _generate_pseudoreplicates_for_repetition(
     pb_result: PseudobulkResult,
     required_samples: dict[str, int],
@@ -290,23 +265,23 @@ def _generate_pseudoreplicates_for_repetition(
             else:
                 obs_names = [cell for cells in batches.values() for cell in cells]
 
+            # Sample cells ONCE
             n_sample = max(1, int(len(obs_names) * resampling_fraction))
             sampled_cells = list(rng.choice(obs_names, size=n_sample, replace=False))
 
-            adata_sampled = adata_sub[sampled_cells].copy()
-
+            # Create sampled adata and pseudobulk directly
             pseudo_sample_name = f"{source_sample}_pr_{i + 1}"
+            adata_sampled = adata_sub[sampled_cells].copy()
             adata_sampled.obs[pb_result.used_replicate_key] = pseudo_sample_name
 
-            adata_pr = _generate_pseudoreplicate(
-                adata_sub=adata_sub,
-                obs_names=obs_names,
-                sample_key=pb_result.used_replicate_key,
-                batch_key=batch_key,
-                resampling_fraction=resampling_fraction,
-                rng=rng,
+            # Pseudobulk the sampled cells directly (no second sampling!)
+            adata_pr = dc.pp.pseudobulk(
+                adata_sampled,
+                sample_col=pb_result.used_replicate_key,
+                groups_col=batch_key,
                 layer=layer,
                 mode=mode,
+                verbose=False,
             )
 
             adata_pr.obs_names = [pseudo_sample_name]
