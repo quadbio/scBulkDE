@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from scbulkde.utils import logger, validate_adata, validate_groups
@@ -31,81 +33,41 @@ def pseudobulk(
     min_bridging_batches: int = 1,
     mode: str = "sum",
 ) -> PseudobulkResult:
-    """Pseudobulk single-cell data for DE analysis.
-
-    Parameters
-    ----------
-    adata
-        Annotated data matrix with raw counts.
-    group_key
-        Column in adata.obs containing condition groups.
-    query
-        Query condition (e.g., "treated").
-    reference
-        Reference condition(s), or "rest" for all other groups.
-        If multiple conditions are provided, they are combined into
-        a single "reference" group.
-    layer
-        Layer containing counts. If None, uses adata.X.
-    replicate_key
-        Column defining biological replicates.
-        If None and batch_key is None, each condition is collapsed into one sample.
-    batch_key
-        Column defining batches.
-        If replicate_key is None, batches are used as technical replicates.
-        If replicate_key is provided, samples are (replicate, batch) combinations.
-    min_cells
-        Minimum cells required per sample.
-    min_fraction
-        Minimum fraction of condition total required per sample.
-        Samples passing either min_cells OR min_fraction are kept.
-    min_coverage
-        Minimum fraction of cells that must be in valid samples.
-        If not met, condition is collapsed.
-    min_bridging_batches
-        Minimum number of batches that must bridge both conditions
-        to include batch in design formula.
-    mode
-        Aggregation mode for pseudobulk. Options: "sum", "mean", "median".
-
-    Returns
-    -------
-    PseudobulkResult
-        Container with pseudobulked counts, metadata, and QC stats.
-    """
+    """Pseudobulk single-cell data for DE analysis."""
     # Validate inputs
     validate_adata(adata, layer, group_key, replicate_key, batch_key)
     validate_groups(adata, group_key, query, reference)
 
-    # Resolve reference
+    # Resolve reference. If reference is rest, use all other groups and
+    # if not, use provided reference(s) and make sure it is a list.
     if reference == "rest":
-        all_groups = adata.obs[group_key].unique().tolist()
+        all_groups = adata.obs[group_key].unique()
         reference_list = [g for g in all_groups if g != query]
     else:
         reference_list = [reference] if isinstance(reference, str) else list(reference)
 
-    # Subset to relevant conditions
-    all_conditions = [query] + reference_list
-    mask = adata.obs[group_key].isin(all_conditions)
-    adata_subset = adata[mask].copy()
+    # Mask stores which cells to keep (query + reference). This yields all cells when
+    # reference is "rest" or reference contains all other groups.
+    group_values = adata.obs[group_key].values
+    all_conditions = np.asarray([query, *reference_list])
+    mask = np.isin(group_values, all_conditions)
 
-    # Create internal comparison column
-    # Combine multiple reference groups into single "reference" label
-    adata_subset.obs["_psbulk_condition"] = adata_subset.obs[group_key].apply(
-        lambda x: "query" if x == query else "reference"
-    )
+    # Create unified condition labels "query" and "reference" for internal use
+    condition_labels = np.empty_like(group_values)
+    condition_labels[:] = "reference"
+    condition_labels[group_values == query] = "query"
+
+    # Subset AnnData and condition labels
+    adata_subset = adata[mask]
+    condition_labels_subset = condition_labels[mask]
+
     internal_group_key = "_psbulk_condition"
     conditions = ["query", "reference"]
 
-    # Identify samples and build design
-    (
-        adata_subset,
-        sample_hierarchy,
-        info,
-        design,
-        include_batch,
-    ) = _identify_samples_and_design(
+    start = time.time()
+    adata_subset, sample_hierarchy, info, design, include_batch, condition_labels_subset = _identify_samples_and_design(
         adata_sub=adata_subset,
+        condition_labels=condition_labels_subset,
         group_key=internal_group_key,
         conditions=conditions,
         replicate_key=replicate_key,
@@ -115,33 +77,38 @@ def pseudobulk(
         min_coverage=min_coverage,
         min_bridging_batches=min_bridging_batches,
     )
+    end = time.time()
+    logger.info(f"Identified samples and design in {end - start:.4f} seconds.")
 
-    # Calculate condition totals (from original subset, before filtering)
-    condition_totals = (
-        adata[mask].obs[group_key].apply(lambda x: "query" if x == query else "reference").value_counts().to_dict()
-    )
+    condition_totals = {
+        "query": np.count_nonzero(condition_labels_subset == "query"),
+        "reference": np.count_nonzero(condition_labels_subset == "reference"),
+    }
 
-    # Build sample stats table
+    start = time.time()
     sample_stats = _compute_sample_stats(
         sample_hierarchy=sample_hierarchy,
         valid_samples_by_condition=info["valid_samples_by_condition"],
         condition_totals=condition_totals,
     )
+    end = time.time()
+    logger.info(f"Computed sample statistics in {end - start:.4f} seconds.")
 
-    # Aggregate counts using decoupler
-    counts, metadata = _aggregate_counts(
+    start = time.time()
+    counts, metadata = _aggregate_counts_direct(
         adata_sub=adata_subset,
-        sample_key=info["used_replicate_key"],
+        sample_hierarchy=sample_hierarchy,
+        valid_samples_by_condition=info["valid_samples_by_condition"],
+        condition_labels=condition_labels_subset,
+        group_key=internal_group_key,
         batch_key=info["used_batch_key"] if include_batch else None,
         layer=layer,
         mode=mode,
     )
+    end = time.time()
+    logger.info(f"Aggregated counts in {end - start:.4f} seconds.")
 
-    # Build contrast (using internal labels)
     contrast = [internal_group_key, "query", "reference"]
-
-    # Mark original adata
-    adata.uns["is_pseudobulked"] = True
 
     return PseudobulkResult(
         counts=counts,
@@ -167,7 +134,8 @@ def pseudobulk(
 
 
 def _identify_samples_and_design(
-    adata_sub: ad.AnnData,
+    adata_sub,
+    condition_labels: np.ndarray,
     group_key: str,
     conditions: list[str],
     replicate_key: str | None,
@@ -176,168 +144,146 @@ def _identify_samples_and_design(
     min_fraction: float,
     min_coverage: float,
     min_bridging_batches: int,
-) -> tuple[ad.AnnData, dict, dict, str, bool]:
-    """Identify samples and determine design formula.
+):
+    """Identify valid samples, build design formula, and detect collapsing."""
+    obs = adata_sub.obs
+    obs_index = np.asarray(obs.index)
+    n_cells = adata_sub.n_obs
 
-    Logic:
-    - If replicate_key provided with batch_key: samples are (replicate, batch) combinations
-    - If only replicate_key: biological replicates, no batch
-    - If only batch_key: batches are used as technical replicates
-    - If neither: collapse each condition into single sample
+    # Batch and replicate value arrays, or placeholders if not provided
+    batch_values = (
+        np.asarray(obs[batch_key]).astype(str, copy=False)
+        if batch_key
+        else np.full(n_cells, "_psbulk_no_batch", dtype=object)
+    )
+    sample_values = np.asarray(obs[replicate_key]).astype(str, copy=False) if replicate_key else None
 
-    Returns
-    -------
-    tuple
-        (adata_sub, sample_hierarchy, info, design, include_batch)
-    """
-    obs = adata_sub.obs.copy()
-
-    # Determine mode based on provided keys
-    if replicate_key is not None and batch_key is not None:
-        # Both provided: samples are (replicate, batch) combinations
-        mode = "replicate_and_batch"
-        sample_key = replicate_key
-        stratify_by_batch = True
-    elif replicate_key is not None:
-        # Only replicate: biological replicates, no batch
-        mode = "replicate_only"
-        sample_key = replicate_key
-        stratify_by_batch = False
-    elif batch_key is not None:
-        # Only batch: use as technical replicates
-        mode = "batch_only"
-        sample_key = batch_key
-        stratify_by_batch = False
+    # Determine mode and keys
+    if replicate_key and batch_key:
+        mode, stratify_by_batch, sample_key = "replicate_and_batch", True, replicate_key
+    elif replicate_key:
+        mode, stratify_by_batch, sample_key = "replicate_only", False, replicate_key
+    elif batch_key:
+        mode, stratify_by_batch, sample_key = "batch_only", False, batch_key
     else:
-        # Neither: collapse everything
-        mode = "no_replicates"
-        sample_key = None
-        stratify_by_batch = False
+        mode, stratify_by_batch, sample_key = "no_replicates", False, None
 
-    # Create internal columns
     internal_sample_key = "_psbulk_sample"
     internal_batch_key = "_psbulk_batch"
+    used_batch_key = batch_key if batch_key else internal_batch_key
 
-    # Set up batch column
-    if batch_key is not None:
-        adata_sub.obs[internal_batch_key] = obs[batch_key].astype(str)
-        used_batch_key = batch_key
-    else:
-        adata_sub.obs[internal_batch_key] = "_psbulk_no_batch"
-        used_batch_key = internal_batch_key
-
-    # Create sample identifiers (prepend condition to make unique)
-    if sample_key is not None:
+    # Build sample_ids per cell
+    condition_labels_str = condition_labels.astype(str)
+    if sample_key:
         if stratify_by_batch:
-            # Sample = condition_replicate_batch
-            adata_sub.obs[internal_sample_key] = (
-                obs[group_key].astype(str)
-                + "_"
-                + obs[sample_key].astype(str)
-                + "_"
-                + adata_sub.obs[internal_batch_key].astype(str)
-            )
+            sample_ids = condition_labels_str + "_" + sample_values + "_" + batch_values
         else:
-            # Sample = condition_replicate (or condition_batch if batch_only)
-            adata_sub.obs[internal_sample_key] = obs[group_key].astype(str) + "_" + obs[sample_key].astype(str)
+            sample_ids = condition_labels_str + "_" + sample_values
         used_replicate_key = internal_sample_key
     else:
+        sample_ids = np.empty(n_cells, dtype=object)
         used_replicate_key = internal_sample_key
 
     sample_hierarchy = {}
     valid_samples_by_condition = {}
     collapsed_conditions = []
+    valid_mask = np.ones(n_cells, dtype=bool)
 
     for cond in conditions:
-        cond_mask = adata_sub.obs[group_key] == cond
-        cond_cells = adata_sub.obs[cond_mask]
-        cond_total = len(cond_cells)
+        cond_mask = condition_labels == cond
+        cond_indices = np.where(cond_mask)[0]
+        cond_total = cond_indices.size
+        cond_obs_names = obs_index[cond_indices]
 
-        if sample_key is None:
-            # No sample info - collapse entire condition
+        if not sample_key:
             collapsed_id = f"{cond}_collapsed"
-            sample_hierarchy[cond] = {collapsed_id: {"_psbulk_no_batch": cond_cells.index.tolist()}}
+            sample_hierarchy[cond] = {collapsed_id: {"_psbulk_no_batch": cond_obs_names}}
             valid_samples_by_condition[cond] = [collapsed_id]
             collapsed_conditions.append(cond)
-            adata_sub.obs.loc[cond_mask, internal_sample_key] = collapsed_id
+            sample_ids[cond_indices] = collapsed_id
             continue
 
-        # Count cells per sample
-        sample_counts = cond_cells.groupby(internal_sample_key, observed=True).size()
-        sample_fractions = sample_counts / cond_total
+        cond_sample_ids = sample_ids[cond_indices]
 
-        # Identify valid samples (pass min_cells OR min_fraction)
-        valid_mask = (sample_counts >= min_cells) | (sample_fractions >= min_fraction)
-        valid_samples = sample_counts[valid_mask].index.tolist()
+        # Group and count sample IDs for this condition
+        unique_samples, counts = np.unique(cond_sample_ids, return_counts=True)
+        sample_fractions = counts / cond_total
 
-        # Check coverage
-        if valid_samples:
-            coverage = sample_counts[valid_samples].sum() / cond_total
+        # Find valid samples by min_cells or fraction
+        valid_sample_mask = (counts >= min_cells) | (sample_fractions >= min_fraction)
+        valid_sample_names = unique_samples[valid_sample_mask]
+
+        # Filter for global min_coverage per condition
+        if valid_sample_names.size:
+            valid_counts = counts[valid_sample_mask]
+            coverage = valid_counts.sum() / cond_total
             if coverage < min_coverage:
-                valid_samples = []
+                valid_sample_names = np.array([], dtype=unique_samples.dtype)
 
         # Collapse if no valid samples
-        if not valid_samples:
+        if valid_sample_names.size == 0:
             collapsed_id = f"{cond}_collapsed"
-            valid_samples = [collapsed_id]
+            valid_sample_names = np.array([collapsed_id], dtype=object)
             collapsed_conditions.append(cond)
-            adata_sub.obs.loc[cond_mask, internal_sample_key] = collapsed_id
-            cond_cells = adata_sub.obs[cond_mask]
+            sample_ids[cond_indices] = collapsed_id
+            cond_sample_ids = sample_ids[cond_indices]
 
-        valid_samples_by_condition[cond] = valid_samples
+        valid_samples_by_condition[cond] = valid_sample_names.tolist()
 
-        # Build hierarchy for this condition
+        # Mark invalid cells in valid_mask
+        is_valid = np.isin(cond_sample_ids, valid_sample_names)
+        valid_mask[cond_indices] = is_valid
+
+        # Construct per-sample hierarchy for this condition
         sample_hierarchy[cond] = {}
-        for sample_id in valid_samples:
-            sample_cells = cond_cells[cond_cells[internal_sample_key] == sample_id]
+        cond_batch_values = batch_values[cond_indices]
+        for sample_name in valid_sample_names:
+            sample_cell_mask = cond_sample_ids == sample_name
+            sample_obs_names = cond_obs_names[sample_cell_mask]
+            sample_batches = cond_batch_values[sample_cell_mask]
 
             if cond in collapsed_conditions:
-                # Collapsed - no batch info
-                sample_hierarchy[cond][sample_id] = {"_psbulk_no_batch": sample_cells.index.tolist()}
+                sample_hierarchy[cond][sample_name] = {"_psbulk_no_batch": sample_obs_names}
             elif mode == "replicate_and_batch":
-                # Already stratified by batch in sample_id
-                # Extract batch from obs
-                batch_val = sample_cells[internal_batch_key].iloc[0]
-                sample_hierarchy[cond][sample_id] = {batch_val: sample_cells.index.tolist()}
+                batch_val = sample_batches[0]
+                sample_hierarchy[cond][sample_name] = {batch_val: sample_obs_names}
             elif mode == "batch_only":
-                # Batch is the sample, store original batch name for bridging
-                original_batch = sample_id.replace(f"{cond}_", "", 1)
-                sample_hierarchy[cond][sample_id] = {original_batch: sample_cells.index.tolist()}
+                original_batch = sample_name.replace(f"{cond}_", "", 1)
+                sample_hierarchy[cond][sample_name] = {original_batch: sample_obs_names}
             else:
-                # replicate_only - no real batch
-                sample_hierarchy[cond][sample_id] = {"_psbulk_no_batch": sample_cells.index.tolist()}
+                sample_hierarchy[cond][sample_name] = {"_psbulk_no_batch": sample_obs_names}
 
-    # Filter adata_sub to only include cells in valid samples
-    all_valid_samples = [s for samples in valid_samples_by_condition.values() for s in samples]
-    mask = adata_sub.obs[internal_sample_key].isin(all_valid_samples)
-    adata_sub = adata_sub[mask]
+    # Filter all arrays by valid_mask
+    adata_sub = adata_sub[valid_mask].copy()
+    condition_labels = condition_labels[valid_mask]
+    sample_ids = sample_ids[valid_mask]
+    batch_values = batch_values[valid_mask]
 
-    # Determine if batch should be included in design
-    include_batch = False
-    bridging_batches = []
+    adata_sub.obs[group_key] = condition_labels
+    adata_sub.obs[internal_sample_key] = sample_ids
+    adata_sub.obs[internal_batch_key] = batch_values
 
-    # Only consider batch if we have real batch info and no collapsed conditions
-    if batch_key is not None and not any(c in collapsed_conditions for c in conditions):
-        batches_per_cond = {}
-        for cond in conditions:
-            batches_per_cond[cond] = {
-                batch_name
-                for sample_dict in sample_hierarchy[cond].values()
-                for batch_name in sample_dict.keys()
-                if batch_name != "_psbulk_no_batch"
+    # Design: Should batch be included?
+    include_batch, bridging_batches = False, []
+    if batch_key and not any(c in collapsed_conditions for c in conditions):
+        # For every condition, collect batch names for its samples (except collapsed)
+        batches_per_cond = {
+            cond: {
+                batch
+                for samples in sample_hierarchy[cond].values()
+                for batch in samples.keys()
+                if batch != "_psbulk_no_batch"
             }
-
-        # Find bridging batches (present in all conditions)
-        all_batch_sets = [batches_per_cond[c] for c in conditions if batches_per_cond[c]]
+            for cond in conditions
+        }
+        # Only consider conditions with some non-empty batch set
+        all_batch_sets = [batches for batches in batches_per_cond.values() if batches]
         if len(all_batch_sets) == len(conditions):
+            # Bridging batches: present in all conditions
             bridging_batches = list(set.intersection(*all_batch_sets))
             include_batch = len(bridging_batches) >= min_bridging_batches
 
-    # Determine design formula
-    if include_batch:
-        design = f"~{group_key}+{batch_key}"
-    else:
-        design = f"~{group_key}"
+    design = f"~{group_key}+{batch_key}" if include_batch else f"~{group_key}"
 
     info = {
         "valid_samples_by_condition": valid_samples_by_condition,
@@ -350,13 +296,11 @@ def _identify_samples_and_design(
 
     logger.debug(f"Mode: {mode}")
     logger.debug(f"Design formula: {design}")
-    logger.debug(f"Valid samples: {valid_samples_by_condition}")
+    logger.debug(f"Valid samples:  {valid_samples_by_condition}")
     if collapsed_conditions:
         logger.warning(f"Collapsed conditions (insufficient replicates): {collapsed_conditions}")
-    if bridging_batches:
-        logger.debug(f"Bridging batches: {bridging_batches}")
 
-    return adata_sub, sample_hierarchy, info, design, include_batch
+    return adata_sub, sample_hierarchy, info, design, include_batch, condition_labels
 
 
 def _compute_sample_stats(
@@ -366,11 +310,11 @@ def _compute_sample_stats(
 ) -> pd.DataFrame:
     """Compute per-sample statistics."""
     rows = []
-
     for cond, samples in sample_hierarchy.items():
-        valid_samples = valid_samples_by_condition.get(cond, [])
-
+        valid_set = set(valid_samples_by_condition.get(cond, []))
+        cond_total = condition_totals[cond]
         for sample_id, batches in samples.items():
+            is_valid = sample_id in valid_set
             for batch_id, cell_indices in batches.items():
                 n_cells = len(cell_indices)
                 rows.append(
@@ -379,71 +323,77 @@ def _compute_sample_stats(
                         "batch": batch_id,
                         "psbulk_sample": sample_id,
                         "n_cells": n_cells,
-                        "fraction": n_cells / condition_totals[cond],
-                        "is_valid": sample_id in valid_samples,
+                        "fraction": n_cells / cond_total,
+                        "is_valid": is_valid,
                     }
                 )
-
     return pd.DataFrame(rows)
 
 
-def _aggregate_counts(
-    adata_sub: ad.AnnData,
-    sample_key: str,
-    batch_key: str | None,
-    layer: str | None,
-    mode: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Aggregate counts by sample using decoupler.
+def _aggregate_counts_direct(
+    adata_sub,
+    sample_hierarchy,
+    valid_samples_by_condition,
+    condition_labels,
+    group_key,
+    batch_key,
+    layer,
+    mode,
+):
+    """Optimized: Aggregate counts directly without decoupler."""
+    import numpy as np
+    import pandas as pd
 
-    Parameters
-    ----------
-    adata_sub
-        Subsetted AnnData with valid samples only.
-    sample_key
-        Column in obs containing sample identifiers.
-    batch_key
-        Column in obs containing batch identifiers (for grouping).
-        If None, no grouping is applied.
-    layer
-        Layer to use for counts. If None, uses adata.X.
-    mode
-        Aggregation mode: "sum", "mean", or "median".
+    X = adata_sub.layers[layer] if layer is not None else adata_sub.X
+    is_sparse = hasattr(X, "tocsc") or hasattr(X, "tocoo")
 
-    Returns
-    -------
-    tuple
-        (counts DataFrame, metadata DataFrame)
-    """
-    import decoupler as dc
+    var_names = np.array(adata_sub.var_names)
+    obs_names = np.array(adata_sub.obs_names)
+    obs_to_pos = {name: i for i, name in enumerate(obs_names)}
 
-    # Run decoupler pseudobulk
-    adata_pb = dc.pp.pseudobulk(
-        adata_sub,
-        sample_col=sample_key,
-        groups_col=batch_key,
-        layer=layer,
-        mode=mode,
-        empty=False,
-        verbose=False,
-    )
+    # Precompute all sample and cell mappings first
+    all_samples = []
+    all_positions = []
 
-    # Filter out empty samples
-    adata_pb = adata_pb[(adata_pb.obs["psbulk_cells"] > 0) & (adata_pb.obs["psbulk_counts"] > 0)].copy()
+    for cond in ["query", "reference"]:
+        for sample_id in valid_samples_by_condition.get(cond, []):
+            for batch_id, cell_names in sample_hierarchy[cond][sample_id].items():
+                all_samples.append((sample_id, cond, batch_id))
+                # Instead of generator, use np.fromiter
+                positions = np.fromiter(
+                    (obs_to_pos[name] for name in cell_names if name in obs_to_pos), dtype=int, count=len(cell_names)
+                )
+                all_positions.append(positions)
 
-    # Extract counts
-    X = adata_pb.X
-    if hasattr(X, "toarray"):
-        X = X.toarray()
+    n_samples = len(all_samples)
+    n_genes = len(var_names)
+    counts_array = np.zeros((n_samples, n_genes), dtype=np.float64)
 
-    counts = pd.DataFrame(
-        X,
-        index=adata_pb.obs_names,
-        columns=adata_pb.var_names,
-    )
+    sample_names = []
+    meta_conditions = []
+    meta_batches = []
 
-    # Extract metadata (drop decoupler's QC columns for cleaner output)
-    metadata_cols = [col for col in adata_pb.obs.columns if not col.startswith("psbulk_")]
-    metadata = adata_pb.obs[metadata_cols].copy()
+    for i, ((sample_id, cond, batch_id), positions) in enumerate(zip(all_samples, all_positions, strict=True)):
+        if positions.size > 0:
+            subset_X = X[positions, :]  # This can be sparse or dense
+            if is_sparse:
+                subset_X = subset_X.toarray() if mode != "sum" else subset_X  # Only densify for mean/median
+            if mode == "sum":
+                # For sparse, .sum(axis=0) returns a dense np.array
+                counts_array[i, :] = np.asarray(subset_X.sum(axis=0)).ravel()
+            elif mode == "mean":
+                counts_array[i, :] = np.mean(subset_X, axis=0)
+            elif mode == "median":
+                counts_array[i, :] = np.median(subset_X, axis=0)
+
+        sample_names.append(sample_id)
+        meta_conditions.append(cond)
+        meta_batches.append(batch_id)
+
+    counts = pd.DataFrame(counts_array, index=sample_names, columns=var_names)
+    meta_dict = {group_key: meta_conditions}
+    if batch_key is not None:
+        meta_dict[batch_key] = meta_batches
+    metadata = pd.DataFrame(meta_dict, index=sample_names)
 
     return counts, metadata
