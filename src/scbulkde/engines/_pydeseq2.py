@@ -20,6 +20,16 @@ class PyDESeq2Engine(DEEngine):
 
     name = "pydeseq2"
 
+    # Cache inference objects by n_cpus to avoid repeated initialization
+    _inference_cache: dict[int, DefaultInference] = {}
+
+    @classmethod
+    def _get_inference(cls, n_cpus: int) -> DefaultInference:
+        """Get or create a cached DefaultInference instance."""
+        if n_cpus not in cls._inference_cache:
+            cls._inference_cache[n_cpus] = DefaultInference(n_cpus=n_cpus)
+        return cls._inference_cache[n_cpus]
+
     def run(
         self,
         counts: pd.DataFrame,
@@ -33,7 +43,6 @@ class PyDESeq2Engine(DEEngine):
         independent_filter: bool = True,
         n_cpus: int = 16,
         quiet: bool = True,
-        **kwargs,
     ) -> pd.DataFrame:
         """Run PyDESeq2 differential expression.
 
@@ -44,7 +53,7 @@ class PyDESeq2Engine(DEEngine):
         metadata
             Sample metadata with design variables.
         design
-            Design formula (e. g., "~condition" or "~condition+batch").
+            Design formula (e.g., "~condition" or "~condition+batch").
         contrast
             Contrast as [factor, query, reference].
         alpha
@@ -52,7 +61,7 @@ class PyDESeq2Engine(DEEngine):
         cooks
             Whether to apply Cook's distance filtering.
         fit_type
-            Dispersion fit type: "mean or "parametric"
+            Dispersion fit type: "mean" or "parametric".
         independent_filter
             Whether to apply independent filtering.
         n_cpus
@@ -68,7 +77,7 @@ class PyDESeq2Engine(DEEngine):
             DE results with log2FoldChange, pvalue, padj, baseMean.
         """
         try:
-            inference = DefaultInference(n_cpus=n_cpus)
+            inference = self._get_inference(n_cpus)
 
             dds = DeseqDataSet(
                 counts=counts,
