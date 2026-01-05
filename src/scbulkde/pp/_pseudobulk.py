@@ -190,8 +190,7 @@ def _identify_samples_and_design(
     tuple
         (adata_sub, sample_hierarchy, info, design, include_batch)
     """
-    adata_sub = adata_sub.copy()
-    obs = adata_sub.obs
+    obs = adata_sub.obs.copy()
 
     # Determine mode based on provided keys
     if replicate_key is not None and batch_key is not None:
@@ -310,7 +309,8 @@ def _identify_samples_and_design(
 
     # Filter adata_sub to only include cells in valid samples
     all_valid_samples = [s for samples in valid_samples_by_condition.values() for s in samples]
-    adata_sub = adata_sub[adata_sub.obs[internal_sample_key].isin(all_valid_samples)].copy()
+    mask = adata_sub.obs[internal_sample_key].isin(all_valid_samples)
+    adata_sub = adata_sub[mask]
 
     # Determine if batch should be included in design
     include_batch = False
