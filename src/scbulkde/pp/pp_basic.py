@@ -93,7 +93,7 @@ def pseudobulk(
             sample_hierarchy=sample_hierarchy,
             valid_samples_by_condition=info["valid_samples_by_condition"],
             condition_totals=condition_totals,
-            original_sample_ids=info["original_sample_ids_by_condition"],
+            original_samples_by_condition=info["original_samples_by_condition"],
             collapsed_conditions=info["collapsed_conditions"],
         )
     else:
@@ -189,13 +189,13 @@ def _identify_samples_and_design(
     collapsed_conditions = []
     valid_mask = np.ones(n_cells, dtype=bool)
 
-    original_sample_ids_by_condition = {}
+    original_samples_by_condition = {}
 
     for cond in conditions:
         indices = np.where(condition_labels == cond)[0]
         cond_sample_ids = sample_ids[indices]
         cond_obs_names = obs_index[indices]
-        original_sample_ids_by_condition[cond] = cond_sample_ids.copy()
+        original_samples_by_condition[cond] = cond_sample_ids.copy()
         original_samples_by_condition[cond] = list(np.unique(cond_sample_ids))
 
         # Count samples and determine validity
@@ -280,35 +280,22 @@ def _compute_sample_stats(
     valid_samples_by_condition: dict[str, list[str]],
     condition_totals: dict[str, int],
     *,
-    original_sample_ids: dict[str, np.ndarray] = None,
+    original_samples_by_condition: dict[str, np.ndarray] = None,
     collapsed_conditions: list[str] = None,
 ) -> pd.DataFrame:
-    """
-    Compute per-sample statistics for all sample candidates, not just valid ones.
-
-    - Reports the n_cells, fraction, and is_valid for each sample candidate.
-    - If a condition is collapsed, lists both the sub-threshold (invalid) candidate samples and the collapsed one.
-    - Optionally, original_sample_ids can be passed for more accurate sample recovery post-filtering.
-    """
+    """Compute per-sample statistics for all sample candidates."""
     import pandas as pd
 
     rows = []
     collapsed_conditions = collapsed_conditions or []
-    # For each condition, we need to reconstruct the original sample candidates
+
     for cond in sample_hierarchy.keys():
         candidates = {}
-        if original_sample_ids is not None and cond in original_sample_ids:
-            # Use the provided original sample ids
-            sample_ids = np.asarray(original_sample_ids[cond])
-            unique_samples, sample_counts = np.unique(sample_ids, return_counts=True)
-            for sample_id, n_cells in zip(unique_samples, sample_counts, strict=True):
-                candidates[sample_id] = n_cells
-        else:
-            # Fallback: use the valid (post-filter) hierarchy, likely incomplete
-            for rep, batch_dict in sample_hierarchy[cond].items():
-                for batch, cell_names in batch_dict.items():
-                    sample_id = f"{cond}_{rep}_{batch}"
-                    candidates[sample_id] = len(cell_names)
+
+        sample_ids = np.asarray(original_samples_by_condition[cond])
+        unique_samples, sample_counts = np.unique(sample_ids, return_counts=True)
+        for sample_id, n_cells in zip(unique_samples, sample_counts, strict=True):
+            candidates[sample_id] = n_cells
 
         valid_set = set(valid_samples_by_condition.get(cond, []))
         cond_total = condition_totals.get(cond, 0)

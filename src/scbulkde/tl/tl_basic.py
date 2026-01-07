@@ -31,6 +31,7 @@ def de(
     min_coverage: float = 0.0,
     min_bridging_batches: int = 1,
     mode: str = "sum",
+    compute_sample_stats: bool = True,
     min_samples: int = 3,
     n_repetitions: int = 10,
     resampling_fraction: float = 0.6,
@@ -64,6 +65,7 @@ def de(
             min_coverage=min_coverage,
             min_bridging_batches=min_bridging_batches,
             mode=mode,
+            compute_sample_stats=compute_sample_stats,
         )
 
     rng = np.random.default_rng(seed)
@@ -106,18 +108,19 @@ def _compute_required_samples(
     pb_result: PseudobulkResult,
     min_samples: int,
 ) -> dict[str, int]:
+    """Compute how many additional valid samples are needed per condition."""
     required = {}
-    for cond, samples in pb_result.valid_samples_by_condition.items():
-        if pb_result.include_batch:
-            current = sum(
-                len(batches)
-                for sample_id in samples
-                if sample_id in pb_result.sample_hierarchy.get(cond, {})
-                for batches in [pb_result.sample_hierarchy[cond][sample_id]]
-            )
-        else:
-            current = len(samples)
+    for cond in pb_result.valid_samples_by_condition:
+        samples = pb_result.valid_samples_by_condition[cond]
+        sample_hierarchy = pb_result.sample_hierarchy.get(cond, {})
+
+        current = 0
+        for sample_id in samples:
+            _, rep, batch = sample_id.split("_", 2)
+            if rep in sample_hierarchy and batch in sample_hierarchy[rep]:
+                current += 1
         required[cond] = max(0, min_samples - current)
+
     return required
 
 
