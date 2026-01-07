@@ -3,7 +3,7 @@ build-backend = "hatchling.build"
 requires = [ "hatchling" ]
 
 [project]
-name = "scBulkDE"
+name = "scbulkde"
 version = "0.0.1"
 description = "Performing differential testing on pseudobulked single-cell data"
 readme = "README.md"
@@ -24,6 +24,7 @@ classifiers = [
 ]
 dependencies = [
   "anndata",
+  "pydeseq2",
   # for debug logging (referenced from the issue template)
   "session-info2",
 ]
