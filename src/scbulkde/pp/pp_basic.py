@@ -7,7 +7,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from scbulkde.ut import PseudobulkResult, aggregate_counts, logger, performance, validate_adata, validate_groups
+from scbulkde.ut import (
+    PseudobulkResult,
+    aggregate_counts,
+    logger,
+    performance,
+    validate_adata,
+    validate_groups,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -63,19 +70,17 @@ def pseudobulk(
     internal_group_key = "_psbulk_condition"
     conditions = ["query", "reference"]
 
-    adata_subset, sample_hierarchy, info, design, include_batch, original_sample_ids_by_condition = (
-        _identify_samples_and_design(
-            adata_sub=adata_subset,
-            condition_labels=condition_labels_subset,
-            group_key=internal_group_key,
-            conditions=conditions,
-            replicate_key=replicate_key,
-            batch_key=batch_key,
-            min_cells=min_cells,
-            min_fraction=min_fraction,
-            min_coverage=min_coverage,
-            min_bridging_batches=min_bridging_batches,
-        )
+    adata_subset, sample_hierarchy, info, design, include_batch = _identify_samples_and_design(
+        adata_sub=adata_subset,
+        condition_labels=condition_labels_subset,
+        group_key=internal_group_key,
+        conditions=conditions,
+        replicate_key=replicate_key,
+        batch_key=batch_key,
+        min_cells=min_cells,
+        min_fraction=min_fraction,
+        min_coverage=min_coverage,
+        min_bridging_batches=min_bridging_batches,
     )
 
     condition_totals = {
@@ -88,7 +93,7 @@ def pseudobulk(
             sample_hierarchy=sample_hierarchy,
             valid_samples_by_condition=info["valid_samples_by_condition"],
             condition_totals=condition_totals,
-            original_sample_ids=original_sample_ids_by_condition,
+            original_sample_ids=info["original_sample_ids_by_condition"],
             collapsed_conditions=info["collapsed_conditions"],
         )
     else:
@@ -115,6 +120,7 @@ def pseudobulk(
         reference=reference_list[0] if len(reference_list) == 1 else reference_list,
         sample_stats=sample_stats,
         valid_samples_by_condition=info["valid_samples_by_condition"],
+        original_samples_by_condition=info["original_samples_by_condition"],
         collapsed_conditions=info["collapsed_conditions"],
         condition_totals=condition_totals,
         replicate_key=info["replicate_key"],
@@ -179,6 +185,7 @@ def _identify_samples_and_design(
 
     sample_hierarchy = {}
     valid_samples_by_condition = {}
+    original_samples_by_condition = {}
     collapsed_conditions = []
     valid_mask = np.ones(n_cells, dtype=bool)
 
@@ -189,6 +196,7 @@ def _identify_samples_and_design(
         cond_sample_ids = sample_ids[indices]
         cond_obs_names = obs_index[indices]
         original_sample_ids_by_condition[cond] = cond_sample_ids.copy()
+        original_samples_by_condition[cond] = list(np.unique(cond_sample_ids))
 
         # Count samples and determine validity
         unique_samples, sample_counts = np.unique(cond_sample_ids, return_counts=True)
@@ -250,6 +258,7 @@ def _identify_samples_and_design(
 
     info = {
         "valid_samples_by_condition": valid_samples_by_condition,
+        "original_samples_by_condition": original_samples_by_condition,
         "collapsed_conditions": collapsed_conditions,
         "replicate_key": replicate_key,
         "batch_key": batch_key,
@@ -262,7 +271,7 @@ def _identify_samples_and_design(
     if collapsed_conditions:
         logger.warning(f"Collapsed conditions (insufficient samples): {collapsed_conditions}")
 
-    return adata_sub, sample_hierarchy, info, design, include_batch, original_sample_ids_by_condition
+    return adata_sub, sample_hierarchy, info, design, include_batch
 
 
 @performance(logger=logger)

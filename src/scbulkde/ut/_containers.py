@@ -37,6 +37,8 @@ class PseudobulkResult:
         - is_valid: whether sample passed filtering
     valid_samples_by_condition
         Dict mapping condition to list of valid sample names.
+    original_samples_by_condition
+        Dict mapping condition to list of original sample names (before filtering).
     collapsed_conditions
         List of conditions that were collapsed due to insufficient replicates.
     condition_totals
@@ -71,6 +73,7 @@ class PseudobulkResult:
     reference: str | list[str]
     sample_stats: pd.DataFrame | None
     valid_samples_by_condition: dict[str, list[str]]
+    original_samples_by_condition: dict[str, list[str]]
     collapsed_conditions: list[str]
     condition_totals: dict[str, int]
     replicate_key: str
@@ -78,7 +81,7 @@ class PseudobulkResult:
     replicate_min_cells: int
     replicate_min_fraction: float
     sample_hierarchy: dict[str, dict[str, dict[str, list]]]
-    adata_subset: object  # ad.AnnData, but avoid import for dataclass
+    adata_subset: object
     include_batch: bool
     layer: str | None
     mode: str
@@ -95,7 +98,7 @@ class PseudobulkResult:
 
     def __repr__(self) -> str:
         n_valid = sum(len(v) for v in self.valid_samples_by_condition.values())
-        n_total = len(self.sample_stats)
+        n_total = sum(len(v) for v in self.original_samples_by_condition.values())
         return (
             f"PseudobulkResult(\n"
             f"  n_samples={n_valid}/{n_total} (valid/total),\n"
