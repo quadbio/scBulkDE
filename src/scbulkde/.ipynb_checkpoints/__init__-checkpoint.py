@@ -3,9 +3,8 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from scbulkde import pp, tl
-from scbulkde.pp import pseudobulk
-from scbulkde.tl import de
-from scbulkde.ut._containers import DEResult, PseudobulkResult
+from scbulkde.pp import PseudobulkResult, pseudobulk
+from scbulkde.tl import DEResult, de
 
 try:
     __version__ = version("scbulkde")

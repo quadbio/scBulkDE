@@ -8,10 +8,8 @@ import numpy as np
 import pandas as pd
 
 from scbulkde.engines import get_engine
-from scbulkde.pp import PseudobulkResult, pseudobulk
-from scbulkde.utils import logger
-
-from ._result import DEResult
+from scbulkde.pp import pseudobulk
+from scbulkde.ut import DEResult, PseudobulkResult, logger
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -41,6 +39,7 @@ def de(
     engine: str = "pydeseq2",
     **engine_kwargs,
 ) -> DEResult:
+    """Perform differential expression analysis using pseudobulk data."""
     if isinstance(data, PseudobulkResult):
         pb_result = data
         logger.info("Using provided PseudobulkResult")
@@ -189,7 +188,7 @@ def _run_de_with_pseudoreplicates(
     base_metadata = pb_result.metadata
     group_key = pb_result.contrast[0]
     include_batch = pb_result.include_batch
-    batch_key = pb_result.used_batch_key if include_batch else None
+    batch_key = pb_result.batch_key if include_batch else None
 
     # Calculate total pseudoreplicates needed
     total_pr = sum(max(0, n) for n in required_samples.values())

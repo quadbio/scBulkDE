@@ -1,6 +1,5 @@
 """Preprocessing functions."""
 
-from ._pseudobulk import pseudobulk
-from ._result import PseudobulkResult
+from .pp_basic import pseudobulk
 
-__all__ = ["pseudobulk", "PseudobulkResult"]
+__all__ = ["pseudobulk"]

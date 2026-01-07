@@ -1,6 +1,5 @@
 """Tools for differential expression analysis."""
 
-from ._de import de
-from ._result import DEResult
+from .tl_basic import de
 
-__all__ = ["de", "DEResult"]
+__all__ = ["de"]

@@ -7,9 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from scbulkde.utils import logger, performance, validate_adata, validate_groups
-
-from ._result import PseudobulkResult
+from scbulkde.ut import PseudobulkResult, aggregate_counts, logger, performance, validate_adata, validate_groups
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -31,6 +29,7 @@ def pseudobulk(
     min_coverage: float = 0.75,
     min_bridging_batches: int = 2,
     mode: str = "sum",
+    compute_sample_stats: bool = True,
 ) -> PseudobulkResult:
     """Pseudobulk single-cell data for DE analysis."""
     # Validate inputs
@@ -83,21 +82,26 @@ def pseudobulk(
         "query": np.count_nonzero(condition_labels_subset == "query"),
         "reference": np.count_nonzero(condition_labels_subset == "reference"),
     }
-    sample_stats = _compute_sample_stats(
-        sample_hierarchy=sample_hierarchy,
-        valid_samples_by_condition=info["valid_samples_by_condition"],
-        condition_totals=condition_totals,
-        original_sample_ids=original_sample_ids_by_condition,
-        collapsed_conditions=info["collapsed_conditions"],
-    )
 
-    counts, metadata = _aggregate_counts_direct(
+    if compute_sample_stats:
+        sample_stats = _compute_sample_stats(
+            sample_hierarchy=sample_hierarchy,
+            valid_samples_by_condition=info["valid_samples_by_condition"],
+            condition_totals=condition_totals,
+            original_sample_ids=original_sample_ids_by_condition,
+            collapsed_conditions=info["collapsed_conditions"],
+        )
+    else:
+        sample_stats = None
+
+    counts, metadata = aggregate_counts(
         adata_sub=adata_subset,
         sample_hierarchy=sample_hierarchy,
-        group_key=internal_group_key,
-        batch_key=info["batch_key"] if include_batch else None,
         layer=layer,
         mode=mode,
+        return_metadata=True,
+        group_key=internal_group_key,
+        batch_key=info["batch_key"] if include_batch else None,
     )
 
     contrast = [internal_group_key, "query", "reference"]
@@ -329,79 +333,3 @@ def _compute_sample_stats(
                 }
             )
     return pd.DataFrame(rows)
-
-
-@performance(logger=logger)
-def _aggregate_counts_direct(
-    adata_sub,
-    sample_hierarchy,
-    group_key,
-    batch_key,
-    layer,
-    mode,
-):
-    """Optimized: Aggregate counts directly with updated sample_hierarchy structure."""
-    import numpy as np
-    import pandas as pd
-
-    X = adata_sub.layers[layer] if layer is not None else adata_sub.X
-    is_sparse = hasattr(X, "tocsc") or hasattr(X, "tocoo")
-
-    var_names = np.array(adata_sub.var_names)
-    obs_names = np.array(adata_sub.obs_names)
-    obs_to_pos = {name: i for i, name in enumerate(obs_names)}
-
-    all_samples = []
-    all_positions = []
-    meta_conditions = []
-    meta_replicates = []
-    meta_batches = []
-
-    # Traverse: condition -> replicate -> batch -> cell_names
-    for cond in ["query", "reference"]:
-        valid_replicates = sample_hierarchy.get(cond, {})
-        for rep, batches in valid_replicates.items():
-            for batch, cell_names in batches.items():
-                all_samples.append(f"{cond}_{rep}_{batch}")
-                meta_conditions.append(cond)
-                meta_replicates.append(rep)
-                meta_batches.append(batch)
-                # Convert cell names to positions, skip if name not found
-                positions = np.fromiter(
-                    (obs_to_pos[name] for name in cell_names if name in obs_to_pos), dtype=int, count=len(cell_names)
-                )
-                all_positions.append(positions)
-
-    n_samples = len(all_samples)
-    n_genes = len(var_names)
-    counts_array = np.zeros((n_samples, n_genes), dtype=np.float64)
-
-    for i, positions in enumerate(all_positions):
-        if positions.size > 0:
-            subset_X = X[positions, :]
-            if is_sparse:
-                subset_X = subset_X.toarray() if mode != "sum" else subset_X  # Densify for mean/median
-            if mode == "sum":
-                counts_array[i, :] = np.asarray(subset_X.sum(axis=0)).ravel()
-            elif mode == "mean":
-                counts_array[i, :] = np.mean(subset_X, axis=0)
-            elif mode == "median":
-                counts_array[i, :] = np.median(subset_X, axis=0)
-            else:
-                raise ValueError(f"Unsupported mode '{mode}'.")
-
-    # For sample_names, use constructed IDs: f"{cond}_{rep}_{batch}"
-    counts = pd.DataFrame(counts_array, index=all_samples, columns=var_names)
-
-    # Metadata DataFrame construction
-    meta_dict = {
-        group_key: meta_conditions,
-        "psbulk_replicate": meta_replicates,
-        "psbulk_batch": meta_batches,
-    }
-    if batch_key is not None:
-        # set user batch_key to meta_batches as well, as in the old code
-        meta_dict[batch_key] = meta_batches
-    metadata = pd.DataFrame(meta_dict, index=all_samples)
-
-    return counts, metadata
