@@ -73,8 +73,8 @@ class PseudobulkResult:
     valid_samples_by_condition: dict[str, list[str]]
     collapsed_conditions: list[str]
     condition_totals: dict[str, int]
-    used_replicate_key: str
-    used_batch_key: str
+    replicate_key: str
+    batch_key: str
     replicate_min_cells: int
     replicate_min_fraction: float
     sample_hierarchy: dict[str, dict[str, dict[str, list]]]
@@ -84,12 +84,12 @@ class PseudobulkResult:
     mode: str
 
     @property
-    def n_samples(self) -> int:
+    def n_obs(self) -> int:
         """Number of valid samples."""
         return self.counts.shape[0]
 
     @property
-    def n_genes(self) -> int:
+    def n_vars(self) -> int:
         """Number of genes."""
         return self.counts.shape[1]
 
@@ -99,7 +99,7 @@ class PseudobulkResult:
         return (
             f"PseudobulkResult(\n"
             f"  n_samples={n_valid}/{n_total} (valid/total),\n"
-            f"  n_genes={self.n_genes},\n"
+            f"  n_genes={self.n_obs},\n"
             f"  design='{self.design}',\n"
             f"  query='{self.query}',\n"
             f"  reference='{self.reference}',\n"
