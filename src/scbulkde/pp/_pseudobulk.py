@@ -125,7 +125,7 @@ def pseudobulk(
     )
 
 
-@performance(enabled=True, logger=logger)
+@performance(logger=logger)
 def _identify_samples_and_design(
     adata_sub,
     condition_labels: np.ndarray,
@@ -205,7 +205,7 @@ def _identify_samples_and_design(
             collapsed_conditions.append(cond)
 
         valid_samples = unique_samples[valid_mask_samples]
-        valid_samples_by_condition[cond] = valid_samples
+        valid_samples_by_condition[cond] = list(valid_samples)
 
         # Mark valid cells
         is_valid = np.isin(cond_sample_ids, valid_samples)
@@ -261,12 +261,12 @@ def _identify_samples_and_design(
     return adata_sub, sample_hierarchy, info, design, include_batch, original_sample_ids_by_condition
 
 
-@performance(enabled=True, logger=logger)
+@performance(logger=logger)
 def _compute_sample_stats(
     sample_hierarchy: dict,
     valid_samples_by_condition: dict[str, list[str]],
     condition_totals: dict[str, int],
-    *,  # force kwargs (for future)
+    *,
     original_sample_ids: dict[str, np.ndarray] = None,
     collapsed_conditions: list[str] = None,
 ) -> pd.DataFrame:
@@ -331,7 +331,7 @@ def _compute_sample_stats(
     return pd.DataFrame(rows)
 
 
-@performance(enabled=True, logger=logger)
+@performance(logger=logger)
 def _aggregate_counts_direct(
     adata_sub,
     sample_hierarchy,

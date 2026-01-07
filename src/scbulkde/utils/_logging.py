@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal
 
 
 def _setup_logger() -> logging.Logger:
@@ -11,8 +10,10 @@ def _setup_logger() -> logging.Logger:
     from rich.console import Console
     from rich.logging import RichHandler
 
+    from . import _constants as config
+
     logger = logging.getLogger("scbulkde")
-    logger.setLevel(logging.INFO)
+    logger.setLevel(getattr(logging, config.LOG_LEVEL.upper()))
 
     console = Console(force_terminal=True)
     if console.is_jupyter is True:
@@ -30,28 +31,24 @@ def _setup_logger() -> logging.Logger:
     return logger
 
 
-def set_log_level(
-    level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | Literal[10, 20, 30, 40, 50],
-) -> None:
-    """Set the logging level for scbulkde.
+def set_log_level(level):
+    """Set the logging level for scbulkde."""
+    import logging
 
-    Parameters
-    ----------
-    level
-        Logging level. Can be a string ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
-        or logging constants (logging.DEBUG=10, logging.INFO=20, etc.).
+    from . import _constants as config
 
-    Examples
-    --------
-    >>> import scbulkde
-    >>> scbulkde.set_log_level("DEBUG")
-    """
     if isinstance(level, str):
-        level = getattr(logging, level.upper())
-
-    logger.setLevel(level)
+        level_str = level.upper()
+        level_value = getattr(logging, level_str)
+    else:
+        level_value = level
+        level_str = logging.getLevelName(level_value)
+        if not isinstance(level_str, str):
+            level_str = "INFO"
+    logger.setLevel(level_value)
     for handler in logger.handlers:
-        handler.setLevel(level)
+        handler.setLevel(level_value)
+    config.LOG_LEVEL = level_str
 
 
 logger = _setup_logger()
