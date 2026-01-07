@@ -254,7 +254,7 @@ def _identify_samples_and_design(
             bridging_batches = list(set.intersection(*all_batch_sets))
             include_batch = len(bridging_batches) >= min_bridging_batches
 
-    design = f"~{group_key}+{batch_key}" if include_batch else f"~{group_key}"
+    design = "~_psbulk_condition+psbulk_batch" if include_batch else "~_psbulk_condition"
 
     info = {
         "valid_samples_by_condition": valid_samples_by_condition,

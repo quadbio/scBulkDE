@@ -9,7 +9,7 @@ import pandas as pd
 
 from scbulkde.engines import get_engine
 from scbulkde.pp import pseudobulk
-from scbulkde.ut import DEResult, PseudobulkResult, logger
+from scbulkde.ut import DEResult, PseudobulkResult, logger, performance
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     import anndata as ad
 
 
+@performance(logger=logger)
 def de(
     data: ad.AnnData | PseudobulkResult,
     *,
@@ -33,7 +34,7 @@ def de(
     mode: str = "sum",
     compute_sample_stats: bool = True,
     min_samples: int = 3,
-    n_repetitions: int = 10,
+    n_repetitions: int = 5,
     resampling_fraction: float = 0.6,
     min_list_overlap: float = 0.9,
     seed: int = 42,
@@ -104,6 +105,7 @@ def de(
         )
 
 
+@performance(logger=logger)
 def _compute_required_samples(
     pb_result: PseudobulkResult,
     min_samples: int,
@@ -162,17 +164,19 @@ def _run_de_with_pseudoreplicates(
     engine_name: str,
     engine_kwargs: dict,
 ) -> DEResult:
+    """
+    Run DE analysis with pseudoreplicate generation.
+
+    Note: Function manually double checked
+    """
     repetition_results = {}
     repetition_stats = {}
 
-    # === PRE-COMPUTE EXPENSIVE OPERATIONS ONCE ===
     adata_sub = pb_result.adata_subset
     layer = pb_result.layer
 
-    # Get count matrix ONCE
     X_full = adata_sub.layers[layer] if layer is not None else adata_sub.X
 
-    # Convert to dense array ONCE (if sparse)
     if hasattr(X_full, "toarray"):
         X_full = X_full.toarray()
 
@@ -189,9 +193,7 @@ def _run_de_with_pseudoreplicates(
 
     # Pre-extract base metadata
     base_metadata = pb_result.metadata
-    group_key = pb_result.contrast[0]
     include_batch = pb_result.include_batch
-    batch_key = pb_result.batch_key if include_batch else None
 
     # Calculate total pseudoreplicates needed
     total_pr = sum(max(0, n) for n in required_samples.values())
@@ -203,50 +205,74 @@ def _run_de_with_pseudoreplicates(
 
     # Pre-compute sample hierarchy info for fast access
     sample_hierarchy = pb_result.sample_hierarchy
-    pr_info = []  # List of (condition, sample_ids, batches_dict) for conditions needing PRs
+
+    # Make a list of (condition, replicate_ids, batches_dict) for conditions needing prs
+    # Go over required samples: this tells for which condition how many additional samples are needed
+    # If n_needed > 0, store the condition, number needed, list of replicate IDs, and batch dict
+    pr_info = []
     for condition, n_needed in required_samples.items():
         if n_needed > 0:
-            sample_ids = list(sample_hierarchy.get(condition, {}).keys())
-            if sample_ids:
-                pr_info.append((condition, n_needed, sample_ids, sample_hierarchy[condition]))
+            replicate_ids = list(sample_hierarchy.get(condition, {}).keys())
+            pr_info.append((condition, n_needed, replicate_ids, sample_hierarchy[condition]))
 
+    # Iterate over repetitions
     for rep_idx in range(n_repetitions):
         logger.debug(f"Repetition {rep_idx + 1}/{n_repetitions}")
 
-        # Generate pseudoreplicates directly into pre-allocated array
         pr_names = []
         pr_meta_conditions = []
+        pr_meta_replicates = []
         pr_meta_batches = []
         pr_idx = n_base_samples
+        pr_stats = []
 
-        for condition, n_needed, sample_ids, cond_hierarchy in pr_info:
+        # Now use the pr_info to generate pseudoreplicates
+        for condition, n_needed, replicate_ids, cond_hierarchy in pr_info:
             for i in range(n_needed):
-                source_sample = rng.choice(sample_ids)
-                batches = cond_hierarchy[source_sample]
+                # Select a random replicate and the batches belonging to the replicate
+                source_replicate = rng.choice(replicate_ids)
+                batches = cond_hierarchy[source_replicate]
 
+                # If batch is to be included and there are multiple options for the batches, select one
                 if include_batch and len(batches) > 1:
                     source_batch = rng.choice(list(batches.keys()))
                     obs_names = batches[source_batch]
+                # If batch is to be included but only one batch exists, use that
+                elif include_batch and len(batches) == 1:
+                    source_batch = list(batches.keys())[0]
+                    obs_names = batches[source_batch]
+                # If batch should not be included at all, pool all cells across batches
                 else:
+                    source_batch = "psbulk_no_batch"
                     obs_names = [cell for cells in batches.values() for cell in cells]
 
-                # Sample cells
+                # Sample cells without replacement
                 n_sample = max(1, int(len(obs_names) * resampling_fraction))
                 sampled_cells = rng.choice(obs_names, size=n_sample, replace=False)
 
-                # Vectorized position lookup and sum
+                # Sum up the counts of the sampled cells
                 sampled_positions = np.array([obs_idx_to_pos[c] for c in sampled_cells])
                 combined_counts_array[pr_idx, :] = X_full[sampled_positions, :].sum(axis=0)
 
-                pseudo_sample_name = f"{source_sample}_pr_{i + 1}"
+                # Construct the name of the pseudoreplicate so that I can know its origin
+                pseudo_sample_name = f"{condition}_{source_replicate}_{source_batch}_pr_{i + 1}"
+
+                # Save pseudoreplicate info
                 pr_names.append(pseudo_sample_name)
                 pr_meta_conditions.append(condition)
+                pr_meta_replicates.append(source_replicate)
+                pr_meta_batches.append(source_batch)
 
-                if include_batch:
-                    assigned_batch = source_batch if len(batches) > 1 else list(batches.keys())[0]
-                else:
-                    assigned_batch = "_psbulk_no_batch"
-                pr_meta_batches.append(assigned_batch)
+                # Save metadata for PR (exclude cell IDs)
+                pr_stats.append(
+                    {
+                        "pseudoreplicate_name": pseudo_sample_name,
+                        "condition": condition,
+                        "source_replicate": source_replicate,
+                        "batch": source_batch,
+                        "num_cells": n_sample,
+                    }
+                )
 
                 pr_idx += 1
 
@@ -260,13 +286,20 @@ def _run_de_with_pseudoreplicates(
 
         # Build metadata by extending base
         if pr_names:
-            pr_meta_dict = {group_key: pr_meta_conditions}
-            if include_batch:
-                pr_meta_dict[batch_key] = pr_meta_batches
-            pr_metadata_df = pd.DataFrame(pr_meta_dict, index=pr_names)
+            pr_metadata_df = pd.DataFrame(
+                {
+                    "_psbulk_condition": pr_meta_conditions,
+                    "psbulk_replicate": pr_meta_replicates,
+                    "psbulk_batch": pr_meta_batches,
+                },
+                index=pr_names,
+            )
             rep_metadata = pd.concat([base_metadata, pr_metadata_df], axis=0)
         else:
             rep_metadata = base_metadata
+
+        # Save stats for this repetition (metadata for all generated pseudoreplicates)
+        repetition_stats[str(rep_idx)] = pr_stats
 
         try:
             rep_result = de_engine.run(

@@ -85,8 +85,6 @@ def aggregate_counts(
         "psbulk_replicate": meta_replicates,
         "psbulk_batch": meta_batches,
     }
-    if batch_key is not None:
-        meta_dict[batch_key] = meta_batches
 
     metadata = pd.DataFrame(meta_dict, index=sample_ids)
 
