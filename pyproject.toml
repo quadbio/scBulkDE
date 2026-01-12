@@ -27,6 +27,7 @@ dependencies = [
   "pydeseq2",
   # for debug logging (referenced from the issue template)
   "session-info2",
+  "statsmodels",
 ]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://scBulkDE.readthedocs.io/"

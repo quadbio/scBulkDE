@@ -115,7 +115,6 @@ def pseudobulk(
         mode=mode,
         return_metadata=True,
         group_key=internal_group_key,
-        batch_key=info["batch_key"] if include_batch else None,
     )
 
     contrast = [internal_group_key, "query", "reference"]
