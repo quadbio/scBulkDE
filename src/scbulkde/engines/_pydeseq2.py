@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 from pydeseq2.dds import DeseqDataSet
 from pydeseq2.default_inference import DefaultInference
 from pydeseq2.ds import DeseqStats
@@ -38,9 +40,8 @@ class PyDESeq2Engine(DEEngine):
         contrast: list[str],
         *,
         alpha: float = 0.05,
-        cooks: bool = True,
         fit_type: Literal["mean", "parametric"] = "mean",
-        independent_filter: bool = True,
+        correction_method: str = "fdr_bh",
         n_cpus: int = 16,
         quiet: bool = True,
     ) -> pd.DataFrame:
@@ -58,18 +59,14 @@ class PyDESeq2Engine(DEEngine):
             Contrast as [factor, query, reference].
         alpha
             Significance threshold for independent filtering.
-        cooks
-            Whether to apply Cook's distance filtering.
         fit_type
             Dispersion fit type: "mean" or "parametric".
-        independent_filter
-            Whether to apply independent filtering.
+        correction_method
+            Method for multiple testing correction.
         n_cpus
             Number of CPUs for parallel processing.
         quiet
             Whether to suppress PyDESeq2 output.
-        **kwargs
-            Additional arguments (unused).
 
         Returns
         -------
@@ -84,19 +81,11 @@ class PyDESeq2Engine(DEEngine):
                 metadata=metadata,
                 design=design,
                 inference=inference,
-                refit_cooks=cooks,
                 fit_type=fit_type,
                 quiet=quiet,
             )
 
-            dds.fit_size_factors()
-            dds.fit_genewise_dispersions()
-            dds.fit_dispersion_trend()
-            dds.fit_dispersion_prior()
-            dds.fit_MAP_dispersions()
-            dds.fit_LFC()
-            dds.calculate_cooks()
-            dds.refit()
+            dds.deseq2()
 
         except Exception as e:
             raise RuntimeError(
@@ -110,18 +99,24 @@ class PyDESeq2Engine(DEEngine):
                 dds,
                 contrast=contrast,
                 alpha=alpha,
-                cooks_filter=cooks,
-                independent_filter=independent_filter,
+                independent_filter=False,
                 quiet=quiet,
                 n_cpus=n_cpus,
             )
 
-            ds.run_wald_test()
-            ds._cooks_filtering()
-            ds._p_value_adjustment()
             ds.summary()
+            results = ds.results_df.copy()
+
+            # Perform multiple testing correction
+            padj = sm.stats.multipletests(
+                results["pvalue"][results["pvalue"].notna()].values,
+                alpha=alpha,
+                method=correction_method,
+            )[1]
+            results["padj"] = np.nan
+            results.loc[results["pvalue"].notna(), "padj"] = padj
 
         except Exception as e:
             raise RuntimeError(f"DESeq2 statistical testing failed: {e}\nContrast: {contrast}") from e
 
-        return ds.results_df.copy()
+        return results
