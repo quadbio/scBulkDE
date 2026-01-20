@@ -1,48 +1,14 @@
-"""DE engine backends."""
+"""Public interface for DE engine components."""
 
-from __future__ import annotations
+from ._base import DEEngineBase
 
-from ._base import DEEngine
-from ._pydeseq2 import PyDESeq2Engine
+# from ._edger import EdgeRDEEngine  # Uncomment if you add more engines
+# from ._limma import LimmaDEEngine
+from ._factory import get_engine_instance
+from ._pydeseq2 import PyDESeq2DEEngine
 
-_ENGINES: dict[str, type[DEEngine]] = {
-    "pydeseq2": PyDESeq2Engine,
-}
-
-
-def get_engine(name: str) -> DEEngine:
-    """Get a DE engine by name.
-
-    Parameters
-    ----------
-    name
-        Engine name. Currently supported: "pydeseq2".
-
-    Returns
-    -------
-    DEEngine
-        Instantiated engine.
-
-    Raises
-    ------
-    ValueError
-        If engine not found.
-    """
-    if name not in _ENGINES:
-        available = list(_ENGINES.keys())
-        raise ValueError(f"Unknown engine '{name}'. Available: {available}")
-    return _ENGINES[name]()
-
-
-def list_engines() -> list[str]:
-    """List available DE engines.
-
-    Returns
-    -------
-    list[str]
-        Names of available engines.
-    """
-    return list(_ENGINES.keys())
-
-
-__all__ = ["DEEngine", "get_engine", "list_engines"]
+__all__ = [
+    "DEEngineBase",
+    "PyDESeq2Engine",
+    "get_engine_instance",
+]

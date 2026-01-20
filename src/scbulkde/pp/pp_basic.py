@@ -196,9 +196,6 @@ def _identify_samples_and_design(
     collapsed_conditions = []
     valid_mask = np.ones(n_cells, dtype=bool)
 
-    # Info about deduplication (only relevant when replicate_key and batch_key are provided)
-    dedup_info = {}
-
     for cond in conditions:
         indices = np.where(condition_labels == cond)[0]
         cond_sample_ids = sample_ids[indices]
@@ -211,39 +208,6 @@ def _identify_samples_and_design(
         fractions = sample_counts / len(indices)
         valid_mask_samples = (sample_counts >= min_cells) | (fractions >= min_fraction)
 
-        # If both replicate and batch keys provided, ensure at most one sample per replicate:
-        # for replicates that appear in multiple batches, keep the sample (batch) with largest cell count.
-        if replicate_key and batch_key:
-            # dedup mapping for this condition
-            dedup_info_cond = {}
-            # extract replicate part from each unique sample id
-            # Assumes sample format condition_replicate_batch (same as construction above)
-            sample_replicates = []
-            for s in unique_samples:
-                parts = s.split("_")
-                # fallback if unexpected format
-                rep = parts[1] if len(parts) > 1 else ""
-                sample_replicates.append(rep)
-            sample_replicates = np.array(sample_replicates, dtype=object)
-
-            for rep in np.unique(sample_replicates):
-                idxs = np.where(sample_replicates == rep)[0]
-                if len(idxs) > 1:
-                    # choose the sample index (batch) with the largest cell count to keep
-                    counts_for_idxs = sample_counts[idxs]
-                    keep_local_idx = idxs[np.argmax(counts_for_idxs)]
-                    dropped_idxs = [int(i) for i in idxs if int(i) != int(keep_local_idx)]
-                    # mark the dropped samples as invalid
-                    for di in dropped_idxs:
-                        valid_mask_samples[di] = False
-                    dedup_info_cond[rep] = {
-                        "kept": unique_samples[int(keep_local_idx)],
-                        "dropped": [unique_samples[int(i)] for i in dropped_idxs],
-                    }
-            if dedup_info_cond:
-                dedup_info[cond] = dedup_info_cond
-
-        # After deduplication, check coverage requirement
         if valid_mask_samples.any():
             coverage = sample_counts[valid_mask_samples].sum() / len(indices)
             if coverage < min_coverage:
@@ -258,9 +222,6 @@ def _identify_samples_and_design(
             sample_counts = np.array([len(indices)], dtype=int)
             valid_mask_samples = np.array([True])
             collapsed_conditions.append(cond)
-            # update dedup info to reflect collapse (if present)
-            if cond in dedup_info:
-                dedup_info[cond]["collapsed_due_to_no_valid_samples"] = True
 
         valid_samples = unique_samples[valid_mask_samples]
         valid_samples_by_condition[cond] = list(valid_samples)
@@ -310,156 +271,15 @@ def _identify_samples_and_design(
         "replicate_key": replicate_key,
         "batch_key": batch_key,
         "bridging_batches": bridging_batches,
-        "deduplicated_replicates": dedup_info,
     }
 
     logger.debug(f"Design formula: {design}")
     logger.debug(f"Valid samples: {valid_samples_by_condition}")
-    if dedup_info:
-        logger.info(f"Deduplicated replicates (kept/dropped): {dedup_info}")
 
     if collapsed_conditions:
         logger.warning(f"Collapsed conditions (insufficient samples): {collapsed_conditions}")
 
     return adata_sub, sample_hierarchy, info, design, include_batch
-
-
-# @performance(logger=logger)
-# def _identify_samples_and_design(
-#     adata_sub,
-#     condition_labels: np.ndarray,
-#     conditions: list[str],
-#     replicate_key: str | None,
-#     batch_key: str | None,
-#     min_cells: int,
-#     min_fraction: float,
-#     min_coverage: float,
-#     min_bridging_batches: int,
-# ):
-#     """
-#     Identify valid samples, build design formula, and detect collapsing.
-
-#     A "sample" is the minimal observational unit over which cell counts are aggregated prior to differential analysis.
-#     Its definition depends on which keys are provided:
-#       - replicate_key and batch_key: Sample = same condition + replicate + batch (ex: 'disease_mouse1_runA')
-#       - replicate_key only: Sample = same condition + replicate (ex: 'disease_mouse1')
-#       - batch_key only: Sample = same condition + batch (ex: 'disease_runA')
-#       - neither: All cells in a condition are collapsed to one sample (ex: 'disease_collapsed')
-#     """
-#     obs = adata_sub.obs
-#     obs_index = np.asarray(obs.index)
-#     n_cells = adata_sub.n_obs
-
-#     # Prepare keys and arrays
-#     batch_vals = (
-#         np.asarray(obs[batch_key]).astype(str, copy=False)
-#         if batch_key
-#         else np.full(n_cells, "psbulk-no-batch", dtype=object)
-#     )
-#     replicate_vals = (
-#         np.asarray(obs[replicate_key]).astype(str, copy=False)
-#         if replicate_key
-#         else np.full(n_cells, "psbulk-no-replicate", dtype=object)
-#     )
-#     condition_str = condition_labels.astype(str)
-
-#     # sample_ids must be dtype=object.
-#     # NumPy fixed-width string arrays (<U*) silently truncate on assignment;
-#     # collapsing conditions assigns longer IDs later, which would otherwise be cut off.
-#     sample_ids = np.array(
-#         condition_str + "_" + replicate_vals + "_" + batch_vals,
-#         dtype=object,
-#     )
-
-#     sample_hierarchy = {}
-#     valid_samples_by_condition = {}
-#     original_samples_by_condition = {}
-#     collapsed_conditions = []
-#     valid_mask = np.ones(n_cells, dtype=bool)
-
-#     original_samples_by_condition = {}
-
-#     for cond in conditions:
-#         indices = np.where(condition_labels == cond)[0]
-#         cond_sample_ids = sample_ids[indices]
-#         cond_obs_names = obs_index[indices]
-#         original_samples_by_condition[cond] = cond_sample_ids.copy()
-#         original_samples_by_condition[cond] = list(np.unique(cond_sample_ids))
-
-#         # Count samples and determine validity
-#         unique_samples, sample_counts = np.unique(cond_sample_ids, return_counts=True)
-#         fractions = sample_counts / len(indices)
-#         valid_mask_samples = (sample_counts >= min_cells) | (fractions >= min_fraction)
-
-#         if valid_mask_samples.any():
-#             coverage = sample_counts[valid_mask_samples].sum() / len(indices)
-#             if coverage < min_coverage:
-#                 valid_mask_samples[:] = False
-
-#         if not valid_mask_samples.any():
-#             collapsed_id = f"{cond}_psbulk-no-replicate_psbulk-no-batch"
-#             sample_ids[indices] = collapsed_id
-#             cond_sample_ids = sample_ids[indices]
-#             unique_samples = np.array([collapsed_id], dtype=object)
-#             valid_mask_samples = np.array([True])
-#             collapsed_conditions.append(cond)
-
-#         valid_samples = unique_samples[valid_mask_samples]
-#         valid_samples_by_condition[cond] = list(valid_samples)
-
-#         # Mark valid cells
-#         is_valid = np.isin(cond_sample_ids, valid_samples)
-#         valid_mask[indices] = is_valid
-
-#         # Build hierarchy: condition -> replicate -> batch -> cell names
-#         sample_hierarchy[cond] = {}
-#         for sample_name in valid_samples:
-#             mask = cond_sample_ids == sample_name
-#             sample_parts = sample_name.split("_")
-#             sample_replicate, sample_batch = sample_parts[1], sample_parts[2]
-#             sample_obs_names = cond_obs_names[mask]
-#             rep_dict = sample_hierarchy[cond].setdefault(sample_replicate, {})
-#             rep_dict.setdefault(sample_batch, []).extend(sample_obs_names)
-
-#     # Filter arrays by valid_mask
-#     adata_sub = adata_sub[valid_mask]
-
-#     # Decide design formula and batch inclusion
-#     include_batch = False
-#     bridging_batches = []
-#     if batch_key and not any(c in collapsed_conditions for c in conditions):
-#         batches_per_cond = {
-#             cond: {
-#                 batch
-#                 for samples in sample_hierarchy[cond].values()
-#                 for batch in samples.keys()
-#                 if batch != "psbulk-no-batch"
-#             }
-#             for cond in conditions
-#         }
-#         all_batch_sets = [batches for batches in batches_per_cond.values() if batches]
-#         if len(all_batch_sets) == len(conditions):
-#             bridging_batches = list(set.intersection(*all_batch_sets))
-#             include_batch = len(bridging_batches) >= min_bridging_batches
-
-#     design = "~_psbulk_condition+psbulk_batch" if include_batch else "~_psbulk_condition"
-
-#     info = {
-#         "valid_samples_by_condition": valid_samples_by_condition,
-#         "original_samples_by_condition": original_samples_by_condition,
-#         "collapsed_conditions": collapsed_conditions,
-#         "replicate_key": replicate_key,
-#         "batch_key": batch_key,
-#         "bridging_batches": bridging_batches,
-#     }
-
-#     logger.debug(f"Design formula: {design}")
-#     logger.debug(f"Valid samples: {valid_samples_by_condition}")
-
-#     if collapsed_conditions:
-#         logger.warning(f"Collapsed conditions (insufficient samples): {collapsed_conditions}")
-
-#     return adata_sub, sample_hierarchy, info, design, include_batch
 
 
 @performance(logger=logger)

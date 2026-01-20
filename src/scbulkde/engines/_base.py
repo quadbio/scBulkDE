@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
 
-class DEEngine(ABC):
+class BaseEngine(ABC):
     """Abstract base class for differential expression engines.
 
     Subclass this to implement new DE backends.
