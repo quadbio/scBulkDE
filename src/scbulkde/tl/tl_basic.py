@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from scbulkde.engines import get_engine
+from scbulkde.engines import get_engine_instance
 from scbulkde.pp import pseudobulk
 from scbulkde.ut import DEResult, PseudobulkResult, logger, performance
 
@@ -76,7 +76,7 @@ def de(
         min_samples=min_samples,
     )
 
-    de_engine = get_engine(engine)
+    de_engine = get_engine_instance(engine)
 
     if all(v == 0 for v in required_samples.values()):
         logger.info(f"Running DE with {engine} engine...")

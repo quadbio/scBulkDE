@@ -1,17 +1,16 @@
 """Factory for creating differential expression engine instances."""
 
+from scbulkde.engines._parametric import AnovaEngine
 from scbulkde.engines._pydeseq2 import PyDESeq2Engine
 from scbulkde.ut._logging import logger
 
 
-def get_engine_instance(adata, engine_name: str, engine_params: dict):
+def get_engine_instance(engine_name: str):
     """
     Create an instance of the specified differential expression engine.
 
     Parameters
     ----------
-    adata
-        Annotated data object (e.g., AnnData, DataFrame).
     engine_name
         Name of the DE engine.
     engine_params
@@ -30,6 +29,7 @@ def get_engine_instance(adata, engine_name: str, engine_params: dict):
     # Available DE engines
     engine_map = {
         "pydeseq2": PyDESeq2Engine,
+        "anova": AnovaEngine,
     }
 
     engine_name_lower = engine_name.lower()
@@ -40,4 +40,4 @@ def get_engine_instance(adata, engine_name: str, engine_params: dict):
         raise ValueError(f"Unknown DE engine: {engine_name}. Available engines: {available_engines}")
 
     logger.info("Creating %s engine instance", engine_name)
-    return engine_class(adata, **engine_params)
+    return engine_class()

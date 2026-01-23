@@ -77,7 +77,7 @@ def pseudobulk(
     condition_labels_subset = condition_labels[mask]
 
     # Identify samples and design
-    internal_group_key = "_psbulk_condition"
+    internal_group_key = "psbulk_condition"
     conditions = ["query", "reference"]
 
     adata_subset, sample_hierarchy, info, design, include_batch = _identify_samples_and_design(
@@ -91,6 +91,8 @@ def pseudobulk(
         min_coverage=min_coverage,
         min_bridging_batches=min_bridging_batches,
     )
+
+    print(design)
 
     condition_totals = {
         "query": np.count_nonzero(condition_labels_subset == "query"),
@@ -262,7 +264,7 @@ def _identify_samples_and_design(
             bridging_batches = list(set.intersection(*all_batch_sets))
             include_batch = len(bridging_batches) >= min_bridging_batches
 
-    design = "~_psbulk_condition+psbulk_batch" if include_batch else "~_psbulk_condition"
+    design = "~psbulk_condition+psbulk_batch" if include_batch else "~psbulk_condition"
 
     info = {
         "valid_samples_by_condition": valid_samples_by_condition,
@@ -315,7 +317,7 @@ def _compute_sample_stats(
                     "condition": cond,
                     "replicate": rep,
                     "batch": batch,
-                    "_psbulk_sample": sample_id,
+                    "psbulk_sample": sample_id,
                     "n_cells": n_cells,
                     "fraction": n_cells / cond_total if cond_total else 0.0,
                     "is_valid": is_valid,
@@ -330,7 +332,7 @@ def _compute_sample_stats(
                     "condition": cond,
                     "replicate": "psbulk-no-replicate",
                     "batch": "psbulk-no-batch",
-                    "_psbulk_sample": collapsed_id,
+                    "psbulk_sample": collapsed_id,
                     "n_cells": cond_total,
                     "fraction": 1.0 if cond_total else 0.0,
                     "is_valid": True,

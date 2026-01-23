@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
 
-class BaseEngine(ABC):
+class DEEngineBase(ABC):
     """Abstract base class for differential expression engines.
 
     Subclass this to implement new DE backends.
@@ -35,10 +35,9 @@ class BaseEngine(ABC):
         metadata
             Sample metadata with design variables.
         design
-            Design formula (e. g., "~condition" or "~condition+batch").
+            Design formula (e.g., "~condition" or "~condition+batch").
         contrast
             Contrast as [factor, query, reference].
-            E.g., ["condition", "treated", "control"] compares treated vs control.
         **kwargs
             Engine-specific parameters.
 

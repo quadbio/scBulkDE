@@ -11,18 +11,17 @@ from pydeseq2.dds import DeseqDataSet
 from pydeseq2.default_inference import DefaultInference
 from pydeseq2.ds import DeseqStats
 
-from ._base import DEEngine
+from ._base import DEEngineBase
 
 if TYPE_CHECKING:
     from typing import Literal
 
 
-class PyDESeq2Engine(DEEngine):
+class PyDESeq2Engine(DEEngineBase):
     """DESeq2 engine using PyDESeq2 (pure Python)."""
 
     name = "pydeseq2"
 
-    # Cache inference objects by n_cpus to avoid repeated initialization
     _inference_cache: dict[int, DefaultInference] = {}
 
     @classmethod
@@ -107,7 +106,6 @@ class PyDESeq2Engine(DEEngine):
             ds.summary()
             results = ds.results_df.copy()
 
-            # Perform multiple testing correction
             padj = sm.stats.multipletests(
                 results["pvalue"][results["pvalue"].notna()].values,
                 alpha=alpha,
@@ -116,7 +114,7 @@ class PyDESeq2Engine(DEEngine):
             results["padj"] = np.nan
             results.loc[results["pvalue"].notna(), "padj"] = padj
 
-        except Exception as e:
-            raise RuntimeError(f"DESeq2 statistical testing failed: {e}\nContrast: {contrast}") from e
+            return results
 
-        return results
+        except Exception as e:
+            raise RuntimeError(f"DESeq2 statistics computation failed: {e}") from e
