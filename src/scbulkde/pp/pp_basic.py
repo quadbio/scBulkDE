@@ -1,23 +1,18 @@
-"""Pseudobulking functions."""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
+from formulaic import model_matrix
 
-from scbulkde.ut import (
-    PseudobulkResult,
-    aggregate_counts,
-    logger,
-    performance,
-    validate_adata,
-    validate_groups,
-)
+from scbulkde.ut._containers import PseudobulkResult
+from scbulkde.ut._logging import logger
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
+    from typing import Literal
 
     import anndata as ad
 
@@ -25,317 +20,352 @@ if TYPE_CHECKING:
 def pseudobulk(
     adata: ad.AnnData,
     group_key: str,
-    query: str,
+    query: str | Sequence[str],
     reference: str | Sequence[str] = "rest",
     *,
-    layer: str | None = None,
     replicate_key: str | None = None,
-    batch_key: str | None = None,
-    min_cells: int = 50,
-    min_fraction: float = 0.2,
-    min_coverage: float = 0.75,
-    min_bridging_batches: int = 2,
-    mode: str = "sum",
-    compute_sample_stats: bool = True,
-) -> PseudobulkResult:
-    """Pseudobulk single-cell data for DE analysis."""
-    # Validate inputs
-    validate_adata(adata, layer, group_key, replicate_key, batch_key)
-    validate_groups(adata, group_key, query, reference)
+    min_cells: int | None = 50,
+    min_fraction: float | None = 0.2,
+    min_coverage: float | None = 0.75,
+    categorical_covariates: Sequence[str] | None = None,
+    continuous_covariates: Sequence[str] | None = None,
+    continuous_aggregation: Literal["mean", "sum", "median"] | Callable | None = "mean",
+    layer: str | None = None,
+    layer_aggregation: Literal["sum", "mean"] = "sum",
+    qualify_strategy: Literal["and", "or"] = "or",
+    covariate_strategy: Literal["sequence_order", "most_levels"] = "sequence_order",
+    resolve_conflicts: bool = True,
+):
+    """Main function to perform pseudobulking on an AnnData object."""
+    group_key_internal = "psbulk_condition"
 
-    # Resolve reference. If reference is rest, use all other groups and
-    # if not, use provided reference(s) and make sure it is a list.
-    if reference == "rest":
-        all_groups = adata.obs[group_key].unique()
-        reference_list = [g for g in all_groups if g != query]
+    # Label cells as 'query' or 'reference' in a new internal column
+    obs = _prepare_internal_groups(
+        adata=adata, group_key=group_key, group_key_internal=group_key_internal, query=query, reference=reference
+    )
+    vc = obs[group_key_internal].value_counts()
+    logger.info(f"Using {vc['query']} query and {vc['reference']} reference cells for pseudobulking.")
+
+    # Check if samples can be generated through grouping by replicate_key and the categorical covariates
+    strata = []
+    if replicate_key:
+        strata.append(replicate_key)
+    if categorical_covariates:
+        strata.extend(categorical_covariates)
+
+    while True:
+        # The user might intentionally not provide a repliate key or covariates
+        if not strata:
+            logger.info("No replicate_key or categorical_covariates provided. Using all cells for pseudobulking.")
+            break
+
+        # Check if samples can be generated given the current strata
+        if _can_generate_samples(
+            obs,
+            stratify_by=strata,
+            min_cells=min_cells,
+            min_fraction=min_fraction,
+            min_coverage=min_coverage,
+            qualify_strategy=qualify_strategy,
+            group_key_internal=group_key_internal,
+        ):
+            break
+
+        # If strata empty: Either use all cells for query and reference or raise error
+        if not strata and resolve_conflicts:
+            logger.warning(f"Cannot generate samples stratifying by {strata}. Falling back to using all cells.")
+            break
+        elif not strata and not resolve_conflicts:
+            raise ValueError(f"Cannot generate samples stratifying by {strata}. and no covariates left to drop.")
+
+        # If strata not empty and not able to generate samples: Drop a covariate
+        strata, dropped = _drop_covariate(covariates=strata, obs=obs, covariate_strategy=covariate_strategy)
+        logger.warning(f"Dropped covariate: {dropped} to meet sample requirements.")
+
+    # Now we know which strata can be used to generate samples. Let's summarize it into a design table.
+    sample_factors_categorical = [group_key_internal] + strata
+    sample_factors_continuous = continuous_covariates if continuous_covariates is not None else []
+    agg_func = _get_aggregation_function(continuous_aggregation)
+
+    obs_grouped = obs.groupby(sample_factors_categorical, observed=True)
+
+    if sample_factors_continuous:
+        sample_table = obs_grouped[sample_factors_continuous].agg(agg_func).reset_index()
     else:
-        reference_list = [reference] if isinstance(reference, str) else list(reference)
+        sample_table = obs[sample_factors_categorical].drop_duplicates().reset_index(drop=True)
 
-    # Inform about replicate and batch key
-    if replicate_key is not None and batch_key is not None:
-        logger.info(f"Using replicate key '{replicate_key}' and batch key '{batch_key}' to define samples.")
-    elif replicate_key is not None:
-        logger.info(f"Using replicate key '{replicate_key}' to define samples.")
-    elif batch_key is not None:
-        logger.warning(
-            f"Using batch key '{batch_key}' to define samples. They do not represent biological replicates, interpret results with care."
+    # Based on that, we can now decide on the design formula. Here, we will use the sample table with one important
+    # detail: although the replicate key does not necessarily introduce collinearity in the columns of the design matrix
+    # it is exclusively used as a means to generate a sample stratification. In the majority of setups, it does not make
+    # sense to include the replicate_key in the design
+    # Let's also remove the group_key_internal from the design_factors here, as we will add it explicitly later with the correct reference level.
+    design_factors_categorical_formula = [
+        f for f in sample_factors_categorical if f != replicate_key and f != group_key_internal
+    ]
+    design_factors_continuous_formula = sample_factors_continuous.copy()
+
+    while True:
+        # Although the while loop should be exited at some point, this is a bit risky. Maybe let's put a safeguard in the future
+        design_formula = _build_design(
+            group_key_internal=group_key_internal,
+            factors_categorical=design_factors_categorical_formula,
+            factors_continuous=design_factors_continuous_formula,
         )
+        mm = model_matrix(design_formula, data=sample_table)
+        if np.linalg.matrix_rank(mm.values) == mm.shape[1]:
+            logger.info(
+                f"Design matrix with shape {mm.shape} has full column rank using design formula:\n{design_formula}"
+            )
+            break
 
-    # Mask stores which cells to keep (query + reference). This yields all cells when
-    # reference is "rest" or reference contains all other groups.
-    group_values = adata.obs[group_key].values
-    all_conditions = np.asarray([query, *reference_list])
-    mask = np.isin(group_values, all_conditions)
+        # If there are categorical factors, consume them first, as each generates n - 1 level columns
+        if design_factors_categorical_formula:
+            design_factors_categorical_formula, dropped = _drop_covariate(
+                covariates=design_factors_categorical_formula, obs=sample_table, covariate_strategy=covariate_strategy
+            )
+            logger.warning(f"Dropped categorical covariate '{dropped}' to achieve full column rank.")
+            continue
 
-    # Create unified condition labels "query" and "reference" for internal use
-    condition_labels = np.empty_like(group_values)
-    condition_labels[:] = "reference"
-    condition_labels[group_values == query] = "query"
+        # If this didn't help, consume continuous covariates. Each one only generates one column
+        # And it is unlikely that they cause collinearity unless they are constant. In that case the algorithm
+        # would converge if all constant and continuous covariates are removed
+        if design_factors_continuous_formula:
+            design_factors_continuous_formula, dropped = _drop_covariate(
+                covariates=design_factors_continuous_formula,
+                obs=sample_table,
+                covariate_strategy="sequence_order",  # enforce sequence order for continuous
+            )
+            logger.warning(f"Dropped continuous covariate '{dropped}' to achieve full column rank.")
+            continue
 
-    # Subset AnnData and condition labels
-    adata_subset = adata[mask]
-    condition_labels_subset = condition_labels[mask]
+    # Now we can finally aggregate the counts into pseudobulk samples
+    df = _aggregate_counts(adata=adata, grouped_obs=obs_grouped, layer=layer, layer_aggregation=layer_aggregation)
 
-    # Identify samples and design
-    internal_group_key = "psbulk_condition"
-    conditions = ["query", "reference"]
-
-    adata_subset, sample_hierarchy, info, design, include_batch = _identify_samples_and_design(
-        adata_sub=adata_subset,
-        condition_labels=condition_labels_subset,
-        conditions=conditions,
-        replicate_key=replicate_key,
-        batch_key=batch_key,
+    return PseudobulkResult(
+        counts=df,
+        sample_table=sample_table,
+        design_matrix=mm,
+        design_formula=design_formula,
+        group_key=group_key,
+        group_key_internal=group_key_internal,
+        query=query,
+        reference=reference,
+        strata=strata,
+        layer=layer,
+        layer_aggregation=layer_aggregation,
+        continuous_covariates=continuous_covariates,
+        categorical_covariates=categorical_covariates,
+        continuous_aggregation=continuous_aggregation,
         min_cells=min_cells,
         min_fraction=min_fraction,
         min_coverage=min_coverage,
-        min_bridging_batches=min_bridging_batches,
+        qualify_strategy=qualify_strategy,
+        n_cells=vc.to_dict(),
     )
 
-    print(design)
 
-    condition_totals = {
-        "query": np.count_nonzero(condition_labels_subset == "query"),
-        "reference": np.count_nonzero(condition_labels_subset == "reference"),
-    }
+def _prepare_internal_groups(
+    adata: ad.AnnData,
+    group_key: str,
+    group_key_internal: str,
+    query: str | Sequence[str],
+    reference: str | Sequence[str],
+):
+    # View
+    obs = adata.obs
 
-    if compute_sample_stats:
-        sample_stats = _compute_sample_stats(
-            sample_hierarchy=sample_hierarchy,
-            valid_samples_by_condition=info["valid_samples_by_condition"],
-            condition_totals=condition_totals,
-            original_samples_by_condition=info["original_samples_by_condition"],
-            collapsed_conditions=info["collapsed_conditions"],
-        )
+    # Ensure correct datatypes. Move later to validation
+    if not isinstance(obs[group_key].dtype, pd.CategoricalDtype):
+        obs[group_key] = obs[group_key].astype("category")
+
+    # Normalize inputs to lists
+    if isinstance(query, str):
+        query = [query]
     else:
-        sample_stats = None
+        query = list(query)
 
-    counts, metadata = aggregate_counts(
-        adata_sub=adata_subset,
-        sample_hierarchy=sample_hierarchy,
-        layer=layer,
-        mode=mode,
-        return_metadata=True,
-        group_key=internal_group_key,
-    )
+    if reference == "rest":
+        reference = [cat for cat in obs[group_key].cat.categories if cat not in query]
+    elif isinstance(reference, str):
+        reference = [reference]
+    else:
+        reference = list(reference)
 
-    contrast = [internal_group_key, "query", "reference"]
+    # Subset obs to relevant cells, make a copy
+    mask_query = obs[group_key].isin(query)
+    mask_reference = obs[group_key].isin(reference)
 
-    return PseudobulkResult(
-        counts=counts,
-        metadata=metadata,
-        design=design,
-        contrast=contrast,
-        query=query,
-        reference=reference_list[0] if len(reference_list) == 1 else reference_list,
-        sample_stats=sample_stats,
-        valid_samples_by_condition=info["valid_samples_by_condition"],
-        original_samples_by_condition=info["original_samples_by_condition"],
-        collapsed_conditions=info["collapsed_conditions"],
-        condition_totals=condition_totals,
-        replicate_key=info["replicate_key"],
-        batch_key=info["batch_key"],
-        replicate_min_cells=min_cells,
-        replicate_min_fraction=min_fraction,
-        sample_hierarchy=sample_hierarchy,
-        adata_subset=adata_subset,
-        include_batch=include_batch,
-        layer=layer,
-        mode=mode,
-    )
+    if not mask_query.any():
+        raise ValueError(f"No cells found for query groups: {query}")
+    if not mask_reference.any():
+        raise ValueError(f"No cells found for reference groups: {reference}")
+
+    mask = mask_query | mask_reference
+    obs = obs[mask].copy()
+
+    obs[group_key_internal] = np.where(obs[group_key].isin(query), "query", "reference")
+
+    return obs
 
 
-@performance(logger=logger)
-def _identify_samples_and_design(
-    adata_sub,
-    condition_labels: np.ndarray,
-    conditions: list[str],
-    replicate_key: str | None,
-    batch_key: str | None,
+def _can_generate_samples(
+    obs: pd.DataFrame,
+    stratify_by: Sequence[str],
     min_cells: int,
     min_fraction: float,
     min_coverage: float,
-    min_bridging_batches: int,
-):
+    qualify_strategy: str,
+    group_key_internal: str,
+) -> bool:
+    """Given stratify_by keys, determine if samples can be generated for 'query' and 'reference'"""
+    if not stratify_by:
+        return False
+
+    for label in ("query", "reference"):
+        # Subset to the relevant group. Has to be at least one cell due to earlier checks
+        obs_sub = obs[obs[group_key_internal] == label]
+        total_cells = len(obs_sub)
+
+        grouped = obs_sub.groupby(list(stratify_by)).size()
+        counts = grouped.values
+
+        qualifying = []
+        for n_cells in counts:
+            # Consider min_cells/min_fraction as fulfilled if None
+            min_cells_ok = True if min_cells is None else n_cells >= min_cells
+            min_fraction_ok = True if min_fraction is None else (n_cells / total_cells) >= min_fraction
+            if qualify_strategy == "and":
+                qualifies = min_cells_ok and min_fraction_ok
+            elif qualify_strategy == "or":
+                qualifies = min_cells_ok or min_fraction_ok
+            else:
+                raise ValueError("qualify_strategy must be 'and' or 'or'")
+            if qualifies:
+                qualifying.append(n_cells)
+
+        # If there are no qualifying cells, return false
+        if not qualifying:
+            return False
+
+        # If there are some, check the total coverage
+        coverage = sum(qualifying) / total_cells
+        if min_coverage is not None and coverage < min_coverage:
+            return False
+
+    # If total coverage is met for both query and reference, return True
+    return True
+
+
+def _build_design(group_key_internal: str, factors_categorical: list, factors_continuous: list):
+    terms = [f"C({group_key_internal}, contr.treatment(base='reference'))"]
+    if factors_categorical:
+        terms += [f"C({f})" for f in factors_categorical]
+    if factors_continuous:
+        terms += factors_continuous
+    return " + ".join(terms)
+
+
+def _drop_covariate(covariates: list, obs: pd.DataFrame, covariate_strategy: str) -> tuple:
+    if covariate_strategy == "sequence_order":
+        dropped = covariates.pop()
+        return covariates, dropped
+    elif covariate_strategy == "most_levels":
+        levels = [obs[cov].nunique() for cov in covariates]
+        idx = int(np.argmax(levels))
+        dropped = covariates.pop(idx)
+        return covariates, dropped
+    else:
+        raise ValueError(f"Unknown covariate_strategy: {covariate_strategy}")
+
+
+def _get_aggregation_function(
+    agg: str | Callable | list,
+    allow: set[str] | None = None,
+) -> Callable | None:
+    """Return a numpy aggregation function, a user-supplied callable, or None."""
+    if allow is None:
+        allow = {"mean", "sum", "median"}
+
+    if isinstance(agg, (list, tuple)) and len(agg) == 0:
+        return None
+
+    if callable(agg):
+        return agg
+
+    if not isinstance(agg, str):
+        raise ValueError(f"Aggregation must be a string, callable, or empty list, got {type(agg)}.")
+
+    agg = agg.lower()
+    if agg not in allow:
+        raise ValueError(f"Aggregation '{agg}' not recognized. Allowed: {allow}")
+
+    if agg == "mean":
+        return np.mean
+    if agg == "sum":
+        return np.sum
+    if agg == "median":
+        return np.median
+
+    raise ValueError(f"Aggregation '{agg}' not supported.")
+
+
+def _aggregate_counts(adata, grouped_obs, layer=None, layer_aggregation="sum"):
     """
-    Identify valid samples, build design formula, and detect collapsing.
+    Aggregates counts for each group, resulting in a pseudobulk matrix (n_samples x n_genes).
 
-    A "sample" is the minimal observational unit over which cell counts are aggregated prior to differential analysis.
-    Its definition depends on which keys are provided:
-      - replicate_key and batch_key: Sample = same condition + replicate + batch (ex: 'disease_mouse1_runA')
-      - replicate_key only: Sample = same condition + replicate (ex: 'disease_mouse1')
-      - batch_key only: Sample = same condition + batch (ex: 'disease_runA')
-      - neither: All cells in a condition are collapsed to one sample (ex: 'disease_collapsed')
+    Parameters
+    ----------
+    adata : AnnData
+        AnnData object.
+    grouped_obs : pd.core.groupby.generic.DataFrameGroupBy
+        Grouped adata.obs (e.g., adata.obs.groupby(["batch", "cell_type"])).
+    layer : str or None
+        .layers key to use for counts, or None for .X.
+    layer_aggregation : {'sum', 'mean'}
+        How to aggregate the counts.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of shape (n_samples, n_genes), index are pseudobulked sample names.
     """
-    obs = adata_sub.obs
-    obs_index = np.asarray(obs.index)
-    n_cells = adata_sub.n_obs
+    if layer is None:
+        X = adata.X
+    else:
+        X = adata.layers[layer]
+    var_names = adata.var_names
 
-    # Prepare keys and arrays
-    batch_vals = (
-        np.asarray(obs[batch_key]).astype(str, copy=False)
-        if batch_key
-        else np.full(n_cells, "psbulk-no-batch", dtype=object)
-    )
-    replicate_vals = (
-        np.asarray(obs[replicate_key]).astype(str, copy=False)
-        if replicate_key
-        else np.full(n_cells, "psbulk-no-replicate", dtype=object)
-    )
-    condition_str = condition_labels.astype(str)
+    # Try to keep everything in sparse unless it's dense to begin with
+    is_sparse = sp.issparse(X)
+    results = []
 
-    # sample_ids must be dtype=object.
-    # NumPy fixed-width string arrays (<U*) silently truncate on assignment;
-    # collapsing conditions assigns longer IDs later, which would otherwise be cut off.
-    sample_ids = np.array(
-        condition_str + "_" + replicate_vals + "_" + batch_vals,
-        dtype=object,
-    )
+    for _, group in grouped_obs:
+        idx = adata.obs.index.get_indexer(group.index)
 
-    sample_hierarchy = {}
-    valid_samples_by_condition = {}
-    original_samples_by_condition = {}
-    collapsed_conditions = []
-    valid_mask = np.ones(n_cells, dtype=bool)
+        # Get the matrix for this group (sparse indexing)
+        if is_sparse:
+            X_group = X[idx]
+        else:
+            X_group = X[idx, :]
+        # Aggregate
+        if layer_aggregation == "sum":
+            agg = X_group.sum(axis=0)
+        elif layer_aggregation == "mean":
+            agg = X_group.mean(axis=0)
+        else:
+            raise ValueError("Invalid layer_aggregation; must be 'sum' or 'mean'.")
+        # keep as 1D sparse matrix if possible
+        if is_sparse:
+            agg = sp.csr_matrix(agg)
+        else:
+            agg = np.asarray(agg)
+        results.append(agg)
 
-    for cond in conditions:
-        indices = np.where(condition_labels == cond)[0]
-        cond_sample_ids = sample_ids[indices]
-        cond_obs_names = obs_index[indices]
-        # store original unique sample ids for this condition
-        original_samples_by_condition[cond] = list(np.unique(cond_sample_ids))
-
-        # Count samples and determine initial validity
-        unique_samples, sample_counts = np.unique(cond_sample_ids, return_counts=True)
-        fractions = sample_counts / len(indices)
-        valid_mask_samples = (sample_counts >= min_cells) | (fractions >= min_fraction)
-
-        if valid_mask_samples.any():
-            coverage = sample_counts[valid_mask_samples].sum() / len(indices)
-            if coverage < min_coverage:
-                valid_mask_samples[:] = False
-
-        # If no valid samples remain for this condition, collapse all cells in this condition into one sample
-        if not valid_mask_samples.any():
-            collapsed_id = f"{cond}_psbulk-no-replicate_psbulk-no-batch"
-            sample_ids[indices] = collapsed_id
-            cond_sample_ids = sample_ids[indices]
-            unique_samples = np.array([collapsed_id], dtype=object)
-            sample_counts = np.array([len(indices)], dtype=int)
-            valid_mask_samples = np.array([True])
-            collapsed_conditions.append(cond)
-
-        valid_samples = unique_samples[valid_mask_samples]
-        valid_samples_by_condition[cond] = list(valid_samples)
-
-        # Mark valid cells
-        is_valid = np.isin(cond_sample_ids, valid_samples)
-        valid_mask[indices] = is_valid
-
-        # Build hierarchy: condition -> replicate -> batch -> cell names
-        sample_hierarchy[cond] = {}
-        for sample_name in valid_samples:
-            mask = cond_sample_ids == sample_name
-            sample_parts = sample_name.split("_")
-            sample_replicate = sample_parts[1] if len(sample_parts) > 1 else "psbulk-no-replicate"
-            sample_batch = sample_parts[2] if len(sample_parts) > 2 else "psbulk-no-batch"
-            sample_obs_names = cond_obs_names[mask]
-            rep_dict = sample_hierarchy[cond].setdefault(sample_replicate, {})
-            rep_dict.setdefault(sample_batch, []).extend(sample_obs_names)
-
-    # Filter arrays by valid_mask
-    adata_sub = adata_sub[valid_mask]
-
-    # Decide design formula and batch inclusion
-    include_batch = False
-    bridging_batches = []
-    if batch_key and not any(c in collapsed_conditions for c in conditions):
-        batches_per_cond = {
-            cond: {
-                batch
-                for samples in sample_hierarchy[cond].values()
-                for batch in samples.keys()
-                if batch != "psbulk-no-batch"
-            }
-            for cond in conditions
-        }
-        all_batch_sets = [batches for batches in batches_per_cond.values() if batches]
-        if len(all_batch_sets) == len(conditions):
-            bridging_batches = list(set.intersection(*all_batch_sets))
-            include_batch = len(bridging_batches) >= min_bridging_batches
-
-    design = "~psbulk_condition+psbulk_batch" if include_batch else "~psbulk_condition"
-
-    info = {
-        "valid_samples_by_condition": valid_samples_by_condition,
-        "original_samples_by_condition": original_samples_by_condition,
-        "collapsed_conditions": collapsed_conditions,
-        "replicate_key": replicate_key,
-        "batch_key": batch_key,
-        "bridging_batches": bridging_batches,
-    }
-
-    logger.debug(f"Design formula: {design}")
-    logger.debug(f"Valid samples: {valid_samples_by_condition}")
-
-    if collapsed_conditions:
-        logger.warning(f"Collapsed conditions (insufficient samples): {collapsed_conditions}")
-
-    return adata_sub, sample_hierarchy, info, design, include_batch
-
-
-@performance(logger=logger)
-def _compute_sample_stats(
-    sample_hierarchy: dict,
-    valid_samples_by_condition: dict[str, list[str]],
-    condition_totals: dict[str, int],
-    *,
-    original_samples_by_condition: dict[str, np.ndarray] = None,
-    collapsed_conditions: list[str] = None,
-) -> pd.DataFrame:
-    """Compute per-sample statistics for all sample candidates."""
-    import pandas as pd
-
-    rows = []
-    collapsed_conditions = collapsed_conditions or []
-
-    for cond in sample_hierarchy.keys():
-        candidates = {}
-
-        sample_ids = np.asarray(original_samples_by_condition[cond])
-        unique_samples, sample_counts = np.unique(sample_ids, return_counts=True)
-        for sample_id, n_cells in zip(unique_samples, sample_counts, strict=True):
-            candidates[sample_id] = n_cells
-
-        valid_set = set(valid_samples_by_condition.get(cond, []))
-        cond_total = condition_totals.get(cond, 0)
-        for sample_id, n_cells in candidates.items():
-            is_valid = sample_id in valid_set
-            rep, batch = sample_id.split("_", 2)[1:]
-            rows.append(
-                {
-                    "condition": cond,
-                    "replicate": rep,
-                    "batch": batch,
-                    "psbulk_sample": sample_id,
-                    "n_cells": n_cells,
-                    "fraction": n_cells / cond_total if cond_total else 0.0,
-                    "is_valid": is_valid,
-                }
-            )
-
-        # If condition is collapsed, add the collapsed sample explicitly
-        if cond in (collapsed_conditions or []):
-            collapsed_id = f"{cond}_psbulk-no-replicate_psbulk-no-batch"
-            rows.append(
-                {
-                    "condition": cond,
-                    "replicate": "psbulk-no-replicate",
-                    "batch": "psbulk-no-batch",
-                    "psbulk_sample": collapsed_id,
-                    "n_cells": cond_total,
-                    "fraction": 1.0 if cond_total else 0.0,
-                    "is_valid": True,
-                }
-            )
-    return pd.DataFrame(rows)
+    # Stack vertically
+    if is_sparse:
+        stacked = sp.vstack(results)
+        df = pd.DataFrame.sparse.from_spmatrix(stacked, columns=var_names)
+    else:
+        stacked = np.vstack(results)
+        df = pd.DataFrame(stacked, columns=var_names)
+    return df
