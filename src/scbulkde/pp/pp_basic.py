@@ -87,12 +87,12 @@ def pseudobulk(
     sample_factors_continuous = continuous_covariates if continuous_covariates is not None else []
     agg_func = _get_aggregation_function(continuous_aggregation)
 
-    obs_grouped = obs.groupby(sample_factors_categorical, observed=True)
+    obs_grouped = obs.groupby(sample_factors_categorical, observed=True, sort=False)
 
     if sample_factors_continuous:
         sample_table = obs_grouped[sample_factors_continuous].agg(agg_func).reset_index()
     else:
-        sample_table = obs[sample_factors_categorical].drop_duplicates().reset_index(drop=True)
+        sample_table = obs_grouped.first().reset_index()[sample_factors_categorical]
 
     # Based on that, we can now decide on the design formula. Here, we will use the sample table with one important
     # detail: although the replicate key does not necessarily introduce collinearity in the columns of the design matrix
@@ -113,9 +113,7 @@ def pseudobulk(
         )
         mm = model_matrix(design_formula, data=sample_table)
         if np.linalg.matrix_rank(mm.values) == mm.shape[1]:
-            logger.info(
-                f"Design matrix with shape {mm.shape} has full column rank using design formula:\n{design_formula}"
-            )
+            logger.info(f"Design matrix with shape {mm.shape} has full rank using design formula:\n{design_formula}")
             break
 
         # If there are categorical factors, consume them first, as each generates n - 1 level columns
@@ -135,7 +133,7 @@ def pseudobulk(
                 obs=sample_table,
                 covariate_strategy="sequence_order",  # enforce sequence order for continuous
             )
-            logger.warning(f"Dropped continuous covariate '{dropped}' to achieve full column rank.")
+            logger.warning(f"Dropped continuous covariate '{dropped}' to achieve full rank.")
             continue
 
     # Now we can finally aggregate the counts into pseudobulk samples
@@ -143,6 +141,7 @@ def pseudobulk(
 
     return PseudobulkResult(
         counts=df,
+        grouped=obs_grouped,
         sample_table=sample_table,
         design_matrix=mm,
         design_formula=design_formula,
@@ -339,7 +338,8 @@ def _aggregate_counts(adata, grouped_obs, layer=None, layer_aggregation="sum"):
     is_sparse = sp.issparse(X)
     results = []
 
-    for _, group in grouped_obs:
+    for a, group in grouped_obs:
+        print(a)
         idx = adata.obs.index.get_indexer(group.index)
 
         # Get the matrix for this group (sparse indexing)
