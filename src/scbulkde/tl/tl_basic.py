@@ -10,8 +10,9 @@ import pandas as pd
 from formulaic import model_matrix
 
 from scbulkde.engines import get_engine_instance
-from scbulkde.pp import _aggregate_counts, _get_aggregation_function, pseudobulk
+from scbulkde.pp import pseudobulk
 from scbulkde.ut import DEResult, PseudobulkResult, logger
+from scbulkde.ut.ut_basic import _aggregate_counts, _get_aggregation_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence

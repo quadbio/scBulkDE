@@ -3,7 +3,6 @@
 from ._containers import DEResult, PseudobulkResult
 from ._logging import logger, set_log_level
 from ._performance import performance
-from ._validation import validate_adata, validate_groups
 from .ut_basic import (
     _aggregate_counts,
     _build_design,
@@ -19,8 +18,6 @@ __all__ = [
     "logger",
     "set_log_level",
     "performance",
-    "validate_adata",
-    "validate_groups",
     "_prepare_internal_groups",
     "_can_generate_samples",
     "_build_design",
