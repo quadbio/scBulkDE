@@ -1,17 +1,15 @@
-"""Logging setup for scbulkde."""
-
 from __future__ import annotations
 
 import logging
 
+from rich.console import Console
+from rich.logging import RichHandler
+
+from . import _constants as config
+
 
 def _setup_logger() -> logging.Logger:
     """Set up the scbulkde logger with rich formatting."""
-    from rich.console import Console
-    from rich.logging import RichHandler
-
-    from . import _constants as config
-
     logger = logging.getLogger("scbulkde")
     logger.setLevel(getattr(logging, config.LOG_LEVEL.upper()))
 
@@ -33,10 +31,6 @@ def _setup_logger() -> logging.Logger:
 
 def set_log_level(level):
     """Set the logging level for scbulkde."""
-    import logging
-
-    from . import _constants as config
-
     if isinstance(level, str):
         level_str = level.upper()
         level_value = getattr(logging, level_str)
