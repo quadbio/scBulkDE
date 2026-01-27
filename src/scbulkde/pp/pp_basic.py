@@ -148,12 +148,10 @@ def pseudobulk(
     )
 
     # We want to also store the original per-cell count matrix because it might be needed for generating pseudoreplicates
-    row_idx = adata.obs.index.get_indexer(obs.index)
-    mat = adata.X if layer is None else adata.layers[layer]
-    counts = mat[row_idx, :]
+    adata_sub = adata[obs.index, :]
 
     return PseudobulkResult(
-        counts=counts,
+        adata_sub=adata_sub,
         pb_counts=pb_counts,
         grouped=obs_grouped,
         sample_table=sample_table,
