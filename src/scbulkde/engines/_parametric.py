@@ -20,11 +20,10 @@ class AnovaEngine(DEEngineBase):
         self,
         counts: pd.DataFrame,
         metadata: pd.DataFrame,
-        design: str,
-        contrast: list[str],
-        *,
-        alpha: float = 0.05,
-        correction_method: str = "fdr_bh",
+        design_matrix: pd.DataFrame,
+        design_formula: str,
+        alpha: float,
+        correction_method: str,
     ) -> pd.DataFrame:
         """Run ANOVA F-test differential expression.
 
@@ -34,10 +33,10 @@ class AnovaEngine(DEEngineBase):
             Gene expression counts (samples x genes).
         metadata
             Sample metadata with design variables.
-        design
-            Design formula (e.g., "~condition" or "~condition+batch").
-        contrast
-            Contrast as [factor, query, reference].
+        design_matrix
+            Design matrix for the regression model.
+        design_formula
+            For compatibility, not used.
         alpha
             Significance threshold for adjusted p-values.
         correction_method
@@ -55,13 +54,7 @@ class AnovaEngine(DEEngineBase):
             n = metadata.shape[0]
             gene_names = counts.columns
 
-            if design == "~psbulk_condition+psbulk_batch":
-                X_full = pd.get_dummies(metadata[["psbulk_condition", "psbulk_batch"]], drop_first=True)
-                X_full = sm.add_constant(X_full)
-            else:
-                X_full = pd.get_dummies(metadata[["psbulk_condition"]], drop_first=True)
-                X_full = sm.add_constant(X_full)
-
+            X_full = design_matrix
             X_reduced = X_full.loc[:, [c for c in X_full.columns if "psbulk_condition" not in c]]
 
             # Convert to numpy arrays
@@ -75,6 +68,12 @@ class AnovaEngine(DEEngineBase):
 
             # Lognormalize counts, get the response variable
             counts = counts.values
+
+            # check how many columns are zero
+            colsums = counts.sum(axis=0)
+            zero_cols = np.sum(colsums == 0)
+            print(zero_cols)
+
             row_sums = counts.sum(axis=1, keepdims=True)
             counts = counts / row_sums * 1e6
             Y = np.log2(counts + 1)
@@ -108,8 +107,8 @@ class AnovaEngine(DEEngineBase):
             results["baseMean"] = np.mean(counts, axis=0)
 
             # Compute log fold change between query and reference
-            query_mask = metadata["psbulk_condition"] == contrast[1]
-            reference_mask = metadata["psbulk_condition"] == contrast[2]
+            query_mask = metadata["psbulk_condition"] == "query"
+            reference_mask = metadata["psbulk_condition"] == "reference"
             mean_query = np.mean(Y[query_mask, :], axis=0)
             mean_reference = np.mean(Y[reference_mask, :], axis=0)
             results["log2FoldChange"] = mean_query - mean_reference

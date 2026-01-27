@@ -22,8 +22,10 @@ class DEEngineBase(ABC):
         self,
         counts: pd.DataFrame,
         metadata: pd.DataFrame,
-        design: str,
-        contrast: list[str],
+        design_matrix: pd.DataFrame,
+        design_formula: str,
+        alpha: float,
+        correction_method: str,
         **kwargs,
     ) -> pd.DataFrame:
         """Run differential expression analysis.
@@ -34,16 +36,15 @@ class DEEngineBase(ABC):
             Gene expression counts (samples x genes).
         metadata
             Sample metadata with design variables.
-        design
+        design_matrix
+            Design matrix for the regression model.
+        design_formula
             Design formula (e.g., "~condition" or "~condition+batch").
-        contrast
-            Contrast as [factor, query, reference].
+        alpha
+            Significance threshold for adjusted p-values.
+        correction_method
+            Method for multiple testing correction.
         **kwargs
-            Engine-specific parameters.
-
-        Returns
-        -------
-        pd.DataFrame
-            Results with columns: log2FoldChange, pvalue, padj, baseMean.
+            Additional engine-specific parameters.
         """
         pass

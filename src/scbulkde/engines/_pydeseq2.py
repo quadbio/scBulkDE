@@ -35,12 +35,12 @@ class PyDESeq2Engine(DEEngineBase):
         self,
         counts: pd.DataFrame,
         metadata: pd.DataFrame,
-        design: str,
-        contrast: list[str],
-        *,
+        design_matrix: pd.DataFrame,
+        design_formula: str,
         alpha: float = 0.05,
-        fit_type: Literal["mean", "parametric"] = "mean",
         correction_method: str = "fdr_bh",
+        *,
+        fit_type: Literal["mean", "parametric"] = "mean",
         n_cpus: int = 16,
         quiet: bool = True,
     ) -> pd.DataFrame:
@@ -52,20 +52,18 @@ class PyDESeq2Engine(DEEngineBase):
             Gene expression counts (samples x genes).
         metadata
             Sample metadata with design variables.
-        design
+        design_matrix
+            For compatibility, not used.
+        design_formula
             Design formula (e.g., "~condition" or "~condition+batch").
-        contrast
-            Contrast as [factor, query, reference].
         alpha
-            Significance threshold for independent filtering.
-        fit_type
-            Dispersion fit type: "mean" or "parametric".
+            Significance threshold for adjusted p-values.
         correction_method
             Method for multiple testing correction.
+        fit_type
+            Type of fitting for dispersion estimation.
         n_cpus
-            Number of CPUs for parallel processing.
-        quiet
-            Whether to suppress PyDESeq2 output.
+            Number of CPUs to use.
 
         Returns
         -------
@@ -78,7 +76,7 @@ class PyDESeq2Engine(DEEngineBase):
             dds = DeseqDataSet(
                 counts=counts,
                 metadata=metadata,
-                design=design,
+                design=design_formula,
                 inference=inference,
                 fit_type=fit_type,
                 quiet=quiet,
@@ -89,14 +87,14 @@ class PyDESeq2Engine(DEEngineBase):
         except Exception as e:
             raise RuntimeError(
                 f"DESeq2 model fitting failed: {e}\n"
-                f"Design: {design}\n"
+                f"Design: {design_formula}\n"
                 f"Samples: {counts.shape[0]}, Genes: {counts.shape[1]}"
             ) from e
 
         try:
             ds = DeseqStats(
                 dds,
-                contrast=contrast,
+                contrast=["psbulk_condition", "query", "reference"],
                 alpha=alpha,
                 independent_filter=False,
                 quiet=quiet,
