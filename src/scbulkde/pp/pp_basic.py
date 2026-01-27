@@ -85,11 +85,11 @@ def pseudobulk(
     # Now we know which strata can be used to generate samples. Let's summarize it into a design table.
     sample_factors_categorical = [group_key_internal] + strata
     sample_factors_continuous = continuous_covariates if continuous_covariates is not None else []
-    agg_func = _get_aggregation_function(continuous_aggregation)
 
     obs_grouped = obs.groupby(sample_factors_categorical, observed=True, sort=False)
 
     if sample_factors_continuous:
+        agg_func = _get_aggregation_function(continuous_aggregation)
         sample_table = obs_grouped[sample_factors_continuous].agg(agg_func).reset_index()
     else:
         sample_table = obs_grouped.first().reset_index()[sample_factors_categorical]
@@ -140,6 +140,7 @@ def pseudobulk(
     df = _aggregate_counts(adata=adata, grouped_obs=obs_grouped, layer=layer, layer_aggregation=layer_aggregation)
 
     return PseudobulkResult(
+        adata_sub=adata[obs.index],
         counts=df,
         grouped=obs_grouped,
         sample_table=sample_table,
@@ -338,8 +339,7 @@ def _aggregate_counts(adata, grouped_obs, layer=None, layer_aggregation="sum"):
     is_sparse = sp.issparse(X)
     results = []
 
-    for a, group in grouped_obs:
-        print(a)
+    for _, group in grouped_obs:
         idx = adata.obs.index.get_indexer(group.index)
 
         # Get the matrix for this group (sparse indexing)
