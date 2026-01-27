@@ -19,7 +19,7 @@ __all__ = [
     # Classes
     "PseudobulkResult",
     "DEResult",
-    # Functions (convenience imports)
+    # Functions
     "pseudobulk",
     "de",
 ]
