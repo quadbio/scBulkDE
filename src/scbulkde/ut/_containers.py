@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    import anndata as ad
     import pandas as pd
+    from pandas.core.groupby.generic import DataFrameGroupBy
 
 
 @dataclass
@@ -14,7 +16,9 @@ class PseudobulkResult:
     """Container for the results of a pseudobulking procedure."""
 
     # Core outputs
+    adata_sub: ad.AnnData
     counts: pd.DataFrame
+    grouped: DataFrameGroupBy
     sample_table: pd.DataFrame
     design_matrix: pd.DataFrame
     design_formula: str
