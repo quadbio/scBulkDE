@@ -11,10 +11,11 @@ from scbulkde.ut._logging import logger
 from scbulkde.ut._performance import performance
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
     from typing import Literal
 
     import anndata as ad
+    from numpy.typing import NDArray
 
 # =================== Helper functions for pp ================= #
 
@@ -217,6 +218,8 @@ def _generate_pseudoreplicate(
         pr_meta = sampled_grouped[continuous_covariates].agg(agg_func).reset_index()
     else:
         pr_meta = sampled_grouped.first().reset_index()[groupby]
+    # print(pr_meta)
+    # print(pr_counts.loc[:,'GFAP'])
 
     return pr_counts, pr_meta
 
@@ -226,6 +229,10 @@ def _aggregate_results(
     min_list_overlap: float,
     alpha: float,
 ) -> tuple[pd.DataFrame, int, int]:
+    from collections import Counter
+
+    import pandas as pd
+
     # Store how many genes were tested in each iteration
     n_genes_tested = results[0].shape[0]
 
@@ -243,20 +250,23 @@ def _aggregate_results(
     n_required = int(len(sig_gene_lists) * min_list_overlap)
     selected_genes = {gene for gene, count in gene_counter.items() if count >= n_required}
 
-    # Handle the case where there are no selected genes
-    if not selected_genes:
-        logger.warning("No genes pass the significance threshold and overlap criteria. Aggregating over all genes.")
-        selected_genes = set().union(*sig_gene_lists)
+    # Make a list of all genes encountered in any iteration
+    all_genes = set()
+    for res in results.values():
+        all_genes.update(res.index)
 
-    # Use mean as an aggregation function
+    # Use mean as an aggregation function for all genes
     aggregated_results = []
     for _, res in results.items():
-        aggregated_results.append(res.loc[list(selected_genes), :])
-
+        # reindex to all genes so all are present
+        aggregated_results.append(res.reindex(list(all_genes)))
     results_df = pd.concat(aggregated_results).groupby(level=0).mean()
 
+    # Add the 'min_list_overlap_sig' column (True if gene is in selected_genes, else False)
+    results_df["min_list_overlap_sig"] = results_df.index.isin(selected_genes)
+
     # Store how many genes were significant in at least min_list_overlap fraction of lists
-    n_genes_significant = len(results_df)
+    n_genes_significant = len(selected_genes)
 
     return results_df, n_genes_tested, n_genes_significant
 
@@ -329,113 +339,109 @@ def _aggregate_counts(
     return df
 
 
-###################
-# def _get_X_and_var_names(
-#     adata: AnnData,
-#     *,
-#     use_raw: bool,
-#     layer: str | None,
-#     mask_var: np.ndarray | None,
-# ):
-#     """
-#     Get data matrix X and variable names from AnnData
+# =================== Helper functions for rank_genes_groups ================= #
+def _get_X_and_var_names(
+    adata: ad.AnnData,
+    *,
+    use_raw: bool,
+    layer: str | None,
+    mask_var: np.ndarray | None,
+):
+    """
+    Get data matrix X and variable names from AnnData
 
-#     This function reimplements logic from:
-#     https://github.com/scverse/scanpy/blob/cf8b46dea735c35a629abfaa2e1bab9047281e34/src/scanpy/tools/_rank_genes_groups.py#L159-L181
-#     """
-#     adata_comp = adata
+    This function reimplements logic from:
+    https://github.com/scverse/scanpy/blob/cf8b46dea735c35a629abfaa2e1bab9047281e34/src/scanpy/tools/_rank_genes_groups.py#L159-L181
+    """
+    adata_comp = adata
 
-#     if layer is not None:
-#         if use_raw:
-#             raise ValueError("Cannot specify `layer` and `use_raw=True`.")
-#         X = adata.layers[layer]
-#     elif use_raw and adata.raw is not None:
-#         adata_comp = adata.raw
-#         X = adata.raw.X
-#     else:
-#         X = adata.X
+    if layer is not None:
+        if use_raw:
+            raise ValueError("Cannot specify `layer` and `use_raw=True`.")
+        X = adata.layers[layer]
+    elif use_raw and adata.raw is not None:
+        adata_comp = adata.raw
+        X = adata.raw.X
+    else:
+        X = adata.X
 
-#     if mask_var is not None:
-#         X = X[:, mask_var]
-#         var_names = adata_comp.var_names[mask_var]
-#     else:
-#         var_names = adata_comp.var_names
+    if mask_var is not None:
+        X = X[:, mask_var]
+        var_names = adata_comp.var_names[mask_var]
+    else:
+        var_names = adata_comp.var_names
 
-#     return X, var_names
-
-
-# def _select_top_n(scores: NDArray, n_top: int):
-#     """Select indices of top n_top scores."""
-#     n_from = scores.shape[0]
-#     reference_indices = np.arange(n_from, dtype=int)
-#     partition = np.argpartition(scores, -n_top)[-n_top:]
-#     partial_indices = np.argsort(scores[partition])[::-1]
-#     global_indices = reference_indices[partition][partial_indices]
-
-#     return global_indices
+    return X, var_names
 
 
-# def _select_groups(
-#     adata: AnnData,
-#     groups_order_subset: Iterable[str] | Literal["all"] = "all",
-#     key: str = "groups",
-# ) -> tuple[list[str], NDArray[np.bool_]]:
-#     """
-#     Get subset of groups in adata.obs[key].
+def _select_top_n(scores: NDArray, n_top: int):
+    """Select indices of top n_top scores."""
+    n_from = scores.shape[0]
+    reference_indices = np.arange(n_from, dtype=int)
+    partition = np.argpartition(scores, -n_top)[-n_top:]
+    partial_indices = np.argsort(scores[partition])[::-1]
+    global_indices = reference_indices[partition][partial_indices]
 
-#     This is an exact copy of the select_groups function from scanpy:
-#     https://github.com/scverse/scanpy/blob/cf8b46dea735c35a629abfaa2e1bab9047281e34/src/scanpy/_utils/__init__.py#L839-L886
-#     In line 875 the logger was replaced with a simple print statement.
-#     """
-#     import numpy as np
-
-#     groups_order = adata.obs[key].cat.categories
-#     if f"{key}_masks" in adata.uns:
-#         groups_masks_obs = adata.uns[f"{key}_masks"]
-#     else:
-#         groups_masks_obs = np.zeros((len(adata.obs[key].cat.categories), adata.obs[key].values.size), dtype=bool)
-#         for iname, name in enumerate(adata.obs[key].cat.categories):
-#             # if the name is not found, fallback to index retrieval
-#             if name in adata.obs[key].values:
-#                 mask_obs = name == adata.obs[key].values
-#             else:
-#                 mask_obs = str(iname) == adata.obs[key].values
-#             groups_masks_obs[iname] = mask_obs
-#     groups_ids = list(range(len(groups_order)))
-#     if groups_order_subset != "all":
-#         groups_ids = []
-#         for name in groups_order_subset:
-#             groups_ids.append(np.where(adata.obs[key].cat.categories.values == name)[0][0])
-#         if len(groups_ids) == 0:
-#             # fallback to index retrieval
-#             groups_ids = np.where(
-#                 np.isin(
-#                     np.arange(len(adata.obs[key].cat.categories)).astype(str),
-#                     np.array(groups_order_subset),
-#                 )
-#             )[0]
-#         if len(groups_ids) == 0:
-#             print(
-#                 f"{np.array(groups_order_subset)} invalid! specify valid "
-#                 f"groups_order (or indices) from {adata.obs[key].cat.categories}",
-#             )
-#             from sys import exit
-
-#             exit(0)
-#         groups_masks_obs = groups_masks_obs[groups_ids]
-#         groups_order_subset = adata.obs[key].cat.categories[groups_ids].values
-#     else:
-#         groups_order_subset = groups_order.values
-#     return groups_order_subset, groups_masks_obs
+    return global_indices
 
 
-# def _fraction_expressing(X, mask_obs):
-#     """Compute fraction of cells expressing each gene in X for given mask."""
-#     from scipy import sparse
+def _select_groups(
+    adata: ad.AnnData,
+    groups_order_subset: Iterable[str] | Literal["all"] = "all",
+    key: str = "groups",
+) -> tuple[list[str], NDArray[np.bool_]]:
+    """
+    Get subset of groups in adata.obs[key].
 
-#     if sparse.issparse(X):
-#         sub = X[mask_obs]
-#         return sub.getnnz(axis=0) / max(1, sub.shape[0])
-#     else:
-#         sub = X[mask_obs]
-#         return np.count_nonzero(sub, axis=0) / max(1, sub.shape[0])
+    This is an exact copy of the select_groups function from scanpy:
+    https://github.com/scverse/scanpy/blob/cf8b46dea735c35a629abfaa2e1bab9047281e34/src/scanpy/_utils/__init__.py#L839-L886
+    In line 875 the logger was replaced with a simple print statement.
+    """
+    groups_order = adata.obs[key].cat.categories
+    if f"{key}_masks" in adata.uns:
+        groups_masks_obs = adata.uns[f"{key}_masks"]
+    else:
+        groups_masks_obs = np.zeros((len(adata.obs[key].cat.categories), adata.obs[key].values.size), dtype=bool)
+        for iname, name in enumerate(adata.obs[key].cat.categories):
+            # if the name is not found, fallback to index retrieval
+            if name in adata.obs[key].values:
+                mask_obs = name == adata.obs[key].values
+            else:
+                mask_obs = str(iname) == adata.obs[key].values
+            groups_masks_obs[iname] = mask_obs
+    groups_ids = list(range(len(groups_order)))
+    if groups_order_subset != "all":
+        groups_ids = []
+        for name in groups_order_subset:
+            groups_ids.append(np.where(adata.obs[key].cat.categories.values == name)[0][0])
+        if len(groups_ids) == 0:
+            # fallback to index retrieval
+            groups_ids = np.where(
+                np.isin(
+                    np.arange(len(adata.obs[key].cat.categories)).astype(str),
+                    np.array(groups_order_subset),
+                )
+            )[0]
+        if len(groups_ids) == 0:
+            print(
+                f"{np.array(groups_order_subset)} invalid! specify valid "
+                f"groups_order (or indices) from {adata.obs[key].cat.categories}",
+            )
+            from sys import exit
+
+            exit(0)
+        groups_masks_obs = groups_masks_obs[groups_ids]
+        groups_order_subset = adata.obs[key].cat.categories[groups_ids].values
+    else:
+        groups_order_subset = groups_order.values
+    return groups_order_subset, groups_masks_obs
+
+
+def _fraction_expressing(X, mask_obs):
+    """Compute fraction of cells expressing each gene in X for given mask."""
+    if sp.issparse(X):
+        sub = X[mask_obs]
+        return sub.getnnz(axis=0) / max(1, sub.shape[0])
+    else:
+        sub = X[mask_obs]
+        return np.count_nonzero(sub, axis=0) / max(1, sub.shape[0])

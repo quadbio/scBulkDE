@@ -44,9 +44,9 @@ def de(
     covariate_strategy: Literal["sequence_order", "most_levels"] = "sequence_order",
     resolve_conflicts: bool = True,
     # pseudoreplicate parameters
-    n_repetitions: int = 5,
+    n_repetitions: int = 10,
     resampling_fraction: float = 0.6,
-    min_list_overlap: float = 0.9,
+    min_list_overlap: float = 1.0,
     # DE paramters
     min_samples: int = 3,
     alpha: float = 0.05,

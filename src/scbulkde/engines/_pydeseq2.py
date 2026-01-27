@@ -110,6 +110,8 @@ class PyDESeq2Engine(DEEngineBase):
             results["padj"] = np.nan
             results.loc[results["pvalue"].notna(), "padj"] = padj
 
+            print(results)
+
             return results
 
         except Exception as e:

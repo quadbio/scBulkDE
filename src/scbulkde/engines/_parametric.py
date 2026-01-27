@@ -42,7 +42,7 @@ class AnovaEngine(DEEngineBase):
         Returns
         -------
         pd.DataFrame
-            Results with columns: F_statistic, pvalue, padj, mean_expression.
+            Results with columns: stat, pvalue, padj, mean_expression.
         """
         try:
             n = metadata.shape[0]
@@ -63,14 +63,25 @@ class AnovaEngine(DEEngineBase):
             # Lognormalize counts, get the response variable
             counts = counts.values
 
-            # check how many columns are zero
-            colsums = counts.sum(axis=0)
-            zero_cols = np.sum(colsums == 0)
-            print(zero_cols)
+            # # DEBUGGING: check how many columns are zero
+            # colsums = counts.sum(axis=0)
+            # zero_cols = np.sum(colsums == 0)
+            # print(zero_cols)
 
             row_sums = counts.sum(axis=1, keepdims=True)
             counts = counts / row_sums * 1e6
             Y = np.log2(counts + 1)
+
+            # DEBUGGING: inspect specific gene and covariate
+            # gene="PAX5"
+            # gene_idx = gene_names.get_loc(gene)
+            # gene_vec = Y[:, gene_idx]
+            # x2_vec = X_full[:, 1]
+            # df = pd.DataFrame({
+            #     gene: gene_vec,
+            #     "X_full_col2": x2_vec
+            # })
+            # print(df)
 
             # OLS
             beta_hat_full, _, _, _ = np.linalg.lstsq(X_full, Y, rcond=None)
@@ -92,20 +103,21 @@ class AnovaEngine(DEEngineBase):
             # Convert to p-values
             pvals = stats.f.sf(F, q, n - p_full)
 
-            results = pd.DataFrame({"pvalue": pvals}, index=gene_names)
+            results = pd.DataFrame({"pvalue": pvals, "stat": F}, index=gene_names)
 
             # Multiple testing correction
             results["padj"] = sm.stats.multipletests(results["pvalue"], alpha=alpha, method=correction_method)[1]
 
-            # Compute the base mean
-            results["baseMean"] = np.mean(counts, axis=0)
+            # Get the lfc from the full model by accessing the second element in beta_hat_full
+            # ("C(psbulk_condition, contr.treatment(base='reference'))[T.query]"). Note, that this is not the same
+            # as the lfc between means of the two groups, as the coefficient is corrected for other covariates in the model.
+            # NOTE: actually I noticed the lfcs are highly inflated when generating pseudoreplicates, and so is the statistic
+            # maybe switch back to manual computation in the future?
+            results["log2FoldChange"] = beta_hat_full[1, :]
 
-            # Compute log fold change between query and reference
-            query_mask = metadata["psbulk_condition"] == "query"
-            reference_mask = metadata["psbulk_condition"] == "reference"
-            mean_query = np.mean(Y[query_mask, :], axis=0)
-            mean_reference = np.mean(Y[reference_mask, :], axis=0)
-            results["log2FoldChange"] = mean_query - mean_reference
+            # Now for plotting purposes, genes are often sorted by the statistic. This statistic is always positive,
+            # which means also genes that are downregulated in query would be listed. To fix this, we multiply the stat with the sign of the lfc.
+            results["stat_sign"] = results["stat"] * np.sign(results["log2FoldChange"])
 
             return results
 
