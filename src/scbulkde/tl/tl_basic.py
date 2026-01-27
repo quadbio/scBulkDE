@@ -195,9 +195,13 @@ def run_de_pseudoreplicates(
                 pr_counts_collected.append(pr_counts)
                 pr_meta_collected.append(pr_meta)
 
-        # Add pseudoreplicates to the original counts and sample_table
-        counts = pd.concat([pb_result.pb_counts] + pr_counts_collected, axis=0)
-        sample_table = pd.concat([pb_result.sample_table] + pr_meta_collected, axis=0)
+        # Add pseudoreplicates to the original counts and sample_table. Ignore index to make unique
+        counts = pd.concat([pb_result.pb_counts] + pr_counts_collected, axis=0, ignore_index=True)
+        sample_table = pd.concat([pb_result.sample_table] + pr_meta_collected, axis=0, ignore_index=True)
+
+        # Transform to string index otherwise e.g. pydeseq2 complains
+        counts.index = counts.index.astype(str)
+        sample_table.index = sample_table.index.astype(str)
 
         # Now we actually need to re-compute the design matrix based on the new sample_table
         design_matrix = model_matrix(

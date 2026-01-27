@@ -119,6 +119,9 @@ class AnovaEngine(DEEngineBase):
             # which means also genes that are downregulated in query would be listed. To fix this, we multiply the stat with the sign of the lfc.
             results["stat_sign"] = results["stat"] * np.sign(results["log2FoldChange"])
 
+            # For consistency, subset to relevant columns
+            results = results.loc[:, ["pvalue", "stat", "padj", "log2FoldChange", "stat_sign"]]
+
             return results
 
         except Exception as e:

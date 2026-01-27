@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from pydeseq2.dds import DeseqDataSet
@@ -10,6 +9,10 @@ from pydeseq2.default_inference import DefaultInference
 from pydeseq2.ds import DeseqStats
 
 from ._base import DEEngineBase
+
+# Ignore UserWarning, ImplicitModificationWarning
+# import warnings
+# warnings.filterwarnings("ignore", category=UserWarning)
 
 if TYPE_CHECKING:
     from typing import Literal
@@ -100,17 +103,16 @@ class PyDESeq2Engine(DEEngineBase):
             )
 
             ds.summary()
-            results = ds.results_df.copy()
+            results = ds.results_df
 
-            padj = sm.stats.multipletests(
-                results["pvalue"][results["pvalue"].notna()].values,
-                alpha=alpha,
-                method=correction_method,
-            )[1]
-            results["padj"] = np.nan
-            results.loc[results["pvalue"].notna(), "padj"] = padj
+            # Adjust p-values using specified correction method
+            results["padj"] = sm.stats.multipletests(results["pvalue"], alpha=alpha, method=correction_method)[1]
 
-            print(results)
+            # For compatibility, introduce a stat_sign column, that in this case is just the stat
+            results["stat_sign"] = results["stat"]
+
+            # For consistency, subset to the relevant columns
+            results = results.loc[:, ["pvalue", "stat", "padj", "log2FoldChange", "stat_sign"]]
 
             return results
 
