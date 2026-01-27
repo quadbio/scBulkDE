@@ -3,12 +3,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
-import scipy.sparse as sp
 from formulaic import model_matrix
 
 from scbulkde.ut._containers import PseudobulkResult
 from scbulkde.ut._logging import logger
+from scbulkde.ut.ut_basic import (
+    _aggregate_counts,
+    _build_design,
+    _can_generate_samples,
+    _drop_covariate,
+    _get_aggregation_function,
+    _prepare_internal_groups,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -137,11 +143,18 @@ def pseudobulk(
             continue
 
     # Now we can finally aggregate the counts into pseudobulk samples
-    df = _aggregate_counts(adata=adata, grouped_obs=obs_grouped, layer=layer, layer_aggregation=layer_aggregation)
+    pb_counts = _aggregate_counts(
+        adata=adata, grouped_obs=obs_grouped, layer=layer, layer_aggregation=layer_aggregation
+    )
+
+    # We want to also store the original per-cell count matrix because it might be needed for generating pseudoreplicates
+    row_idx = adata.obs.index.get_indexer(obs.index)
+    mat = adata.X if layer is None else adata.layers[layer]
+    counts = mat[row_idx, :]
 
     return PseudobulkResult(
-        adata_sub=adata[obs.index],
-        counts=df,
+        counts=counts,
+        pb_counts=pb_counts,
         grouped=obs_grouped,
         sample_table=sample_table,
         design_matrix=mm,
@@ -153,219 +166,12 @@ def pseudobulk(
         strata=strata,
         layer=layer,
         layer_aggregation=layer_aggregation,
-        continuous_covariates=continuous_covariates,
         categorical_covariates=categorical_covariates,
+        continuous_covariates=continuous_covariates,
         continuous_aggregation=continuous_aggregation,
         min_cells=min_cells,
         min_fraction=min_fraction,
         min_coverage=min_coverage,
         qualify_strategy=qualify_strategy,
-        n_cells=vc.to_dict(),
+        n_cells=vc,
     )
-
-
-def _prepare_internal_groups(
-    adata: ad.AnnData,
-    group_key: str,
-    group_key_internal: str,
-    query: str | Sequence[str],
-    reference: str | Sequence[str],
-):
-    # View
-    obs = adata.obs
-
-    # Ensure correct datatypes. Move later to validation
-    if not isinstance(obs[group_key].dtype, pd.CategoricalDtype):
-        obs[group_key] = obs[group_key].astype("category")
-
-    # Normalize inputs to lists
-    if isinstance(query, str):
-        query = [query]
-    else:
-        query = list(query)
-
-    if reference == "rest":
-        reference = [cat for cat in obs[group_key].cat.categories if cat not in query]
-    elif isinstance(reference, str):
-        reference = [reference]
-    else:
-        reference = list(reference)
-
-    # Subset obs to relevant cells, make a copy
-    mask_query = obs[group_key].isin(query)
-    mask_reference = obs[group_key].isin(reference)
-
-    if not mask_query.any():
-        raise ValueError(f"No cells found for query groups: {query}")
-    if not mask_reference.any():
-        raise ValueError(f"No cells found for reference groups: {reference}")
-
-    mask = mask_query | mask_reference
-    obs = obs[mask].copy()
-
-    obs[group_key_internal] = np.where(obs[group_key].isin(query), "query", "reference")
-
-    return obs
-
-
-def _can_generate_samples(
-    obs: pd.DataFrame,
-    stratify_by: Sequence[str],
-    min_cells: int,
-    min_fraction: float,
-    min_coverage: float,
-    qualify_strategy: str,
-    group_key_internal: str,
-) -> bool:
-    """Given stratify_by keys, determine if samples can be generated for 'query' and 'reference'"""
-    if not stratify_by:
-        return False
-
-    for label in ("query", "reference"):
-        # Subset to the relevant group. Has to be at least one cell due to earlier checks
-        obs_sub = obs[obs[group_key_internal] == label]
-        total_cells = len(obs_sub)
-
-        grouped = obs_sub.groupby(list(stratify_by)).size()
-        counts = grouped.values
-
-        qualifying = []
-        for n_cells in counts:
-            # Consider min_cells/min_fraction as fulfilled if None
-            min_cells_ok = True if min_cells is None else n_cells >= min_cells
-            min_fraction_ok = True if min_fraction is None else (n_cells / total_cells) >= min_fraction
-            if qualify_strategy == "and":
-                qualifies = min_cells_ok and min_fraction_ok
-            elif qualify_strategy == "or":
-                qualifies = min_cells_ok or min_fraction_ok
-            else:
-                raise ValueError("qualify_strategy must be 'and' or 'or'")
-            if qualifies:
-                qualifying.append(n_cells)
-
-        # If there are no qualifying cells, return false
-        if not qualifying:
-            return False
-
-        # If there are some, check the total coverage
-        coverage = sum(qualifying) / total_cells
-        if min_coverage is not None and coverage < min_coverage:
-            return False
-
-    # If total coverage is met for both query and reference, return True
-    return True
-
-
-def _build_design(group_key_internal: str, factors_categorical: list, factors_continuous: list):
-    terms = [f"C({group_key_internal}, contr.treatment(base='reference'))"]
-    if factors_categorical:
-        terms += [f"C({f})" for f in factors_categorical]
-    if factors_continuous:
-        terms += factors_continuous
-    return " + ".join(terms)
-
-
-def _drop_covariate(covariates: list, obs: pd.DataFrame, covariate_strategy: str) -> tuple:
-    if covariate_strategy == "sequence_order":
-        dropped = covariates.pop()
-        return covariates, dropped
-    elif covariate_strategy == "most_levels":
-        levels = [obs[cov].nunique() for cov in covariates]
-        idx = int(np.argmax(levels))
-        dropped = covariates.pop(idx)
-        return covariates, dropped
-    else:
-        raise ValueError(f"Unknown covariate_strategy: {covariate_strategy}")
-
-
-def _get_aggregation_function(
-    agg: str | Callable | list,
-    allow: set[str] | None = None,
-) -> Callable | None:
-    """Return a numpy aggregation function, a user-supplied callable, or None."""
-    if allow is None:
-        allow = {"mean", "sum", "median"}
-
-    if isinstance(agg, (list, tuple)) and len(agg) == 0:
-        return None
-
-    if callable(agg):
-        return agg
-
-    if not isinstance(agg, str):
-        raise ValueError(f"Aggregation must be a string, callable, or empty list, got {type(agg)}.")
-
-    agg = agg.lower()
-    if agg not in allow:
-        raise ValueError(f"Aggregation '{agg}' not recognized. Allowed: {allow}")
-
-    if agg == "mean":
-        return np.mean
-    if agg == "sum":
-        return np.sum
-    if agg == "median":
-        return np.median
-
-    raise ValueError(f"Aggregation '{agg}' not supported.")
-
-
-def _aggregate_counts(adata, grouped_obs, layer=None, layer_aggregation="sum"):
-    """
-    Aggregates counts for each group, resulting in a pseudobulk matrix (n_samples x n_genes).
-
-    Parameters
-    ----------
-    adata : AnnData
-        AnnData object.
-    grouped_obs : pd.core.groupby.generic.DataFrameGroupBy
-        Grouped adata.obs (e.g., adata.obs.groupby(["batch", "cell_type"])).
-    layer : str or None
-        .layers key to use for counts, or None for .X.
-    layer_aggregation : {'sum', 'mean'}
-        How to aggregate the counts.
-
-    Returns
-    -------
-    pd.DataFrame
-        DataFrame of shape (n_samples, n_genes), index are pseudobulked sample names.
-    """
-    if layer is None:
-        X = adata.X
-    else:
-        X = adata.layers[layer]
-    var_names = adata.var_names
-
-    # Try to keep everything in sparse unless it's dense to begin with
-    is_sparse = sp.issparse(X)
-    results = []
-
-    for _, group in grouped_obs:
-        idx = adata.obs.index.get_indexer(group.index)
-
-        # Get the matrix for this group (sparse indexing)
-        if is_sparse:
-            X_group = X[idx]
-        else:
-            X_group = X[idx, :]
-        # Aggregate
-        if layer_aggregation == "sum":
-            agg = X_group.sum(axis=0)
-        elif layer_aggregation == "mean":
-            agg = X_group.mean(axis=0)
-        else:
-            raise ValueError("Invalid layer_aggregation; must be 'sum' or 'mean'.")
-        # keep as 1D sparse matrix if possible
-        if is_sparse:
-            agg = sp.csr_matrix(agg)
-        else:
-            agg = np.asarray(agg)
-        results.append(agg)
-
-    # Stack vertically
-    if is_sparse:
-        stacked = sp.vstack(results)
-        df = pd.DataFrame.sparse.from_spmatrix(stacked, columns=var_names)
-    else:
-        stacked = np.vstack(results)
-        df = pd.DataFrame(stacked, columns=var_names)
-    return df

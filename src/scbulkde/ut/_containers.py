@@ -6,8 +6,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    import anndata as ad
     import pandas as pd
+    import scipy.sparse as sp
+    from numpy.typing import NDArray
     from pandas.core.groupby.generic import DataFrameGroupBy
 
 
@@ -16,8 +17,8 @@ class PseudobulkResult:
     """Container for the results of a pseudobulking procedure."""
 
     # Core outputs
-    adata_sub: ad.AnnData
-    counts: pd.DataFrame
+    counts: NDArray | sp.csr_matrix
+    pb_counts: pd.DataFrame
     grouped: DataFrameGroupBy
     sample_table: pd.DataFrame
     design_matrix: pd.DataFrame
@@ -33,8 +34,8 @@ class PseudobulkResult:
     # Aggregation settings
     layer: str | None
     layer_aggregation: str
-    continuous_covariates: Sequence[str] | None
     categorical_covariates: Sequence[str] | None
+    continuous_covariates: Sequence[str] | None
     continuous_aggregation: str | None
 
     # Filtering / qualification parameters

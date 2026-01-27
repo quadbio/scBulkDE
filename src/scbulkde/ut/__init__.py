@@ -4,19 +4,27 @@ from ._containers import DEResult, PseudobulkResult
 from ._logging import logger, set_log_level
 from ._performance import performance
 from ._validation import validate_adata, validate_groups
-from .ut_basic import _fraction_expressing, _get_X_and_var_names, _select_groups, _select_top_n, aggregate_counts
+from .ut_basic import (
+    _aggregate_counts,
+    _build_design,
+    _can_generate_samples,
+    _drop_covariate,
+    _get_aggregation_function,
+    _prepare_internal_groups,
+)
 
 __all__ = [
-    "aggregate_counts",
-    "PseudobulkResult",
     "DEResult",
+    "PseudobulkResult",
     "logger",
     "set_log_level",
+    "performance",
     "validate_adata",
     "validate_groups",
-    "performance",
-    "_get_X_and_var_names",
-    "_select_top_n",
-    "_select_groups",
-    "_fraction_expressing",
+    "_prepare_internal_groups",
+    "_can_generate_samples",
+    "_build_design",
+    "_drop_covariate",
+    "_get_aggregation_function",
+    "_aggregate_counts",
 ]
