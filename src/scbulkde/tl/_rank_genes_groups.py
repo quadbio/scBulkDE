@@ -17,11 +17,17 @@ if TYPE_CHECKING:
 from scbulkde.ut import (
     _fraction_expressing,
     _get_X_and_var_names,
+    _in_notebook,
     _select_groups,
     _select_top_n,
 )
 
 from .tl_basic import de
+
+if _in_notebook():
+    from tqdm.notebook import tqdm
+else:
+    from tqdm import tqdm
 
 
 def rank_genes_groups(
@@ -127,7 +133,7 @@ def rank_genes_groups(
     # Do the actual DE
     stats = None
 
-    for group in groups_order:
+    for group in tqdm(groups_order):
         de_res = de(
             adata,
             group_key=groupby,

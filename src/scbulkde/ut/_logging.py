@@ -8,6 +8,16 @@ from rich.logging import RichHandler
 from . import _constants as config
 
 
+def _in_notebook():
+    try:
+        from IPython import get_ipython
+
+        shell = get_ipython().__class__.__name__
+        return shell == "ZMQInteractiveShell"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _setup_logger() -> logging.Logger:
     """Set up the scbulkde logger with rich formatting."""
     logger = logging.getLogger("scbulkde")
