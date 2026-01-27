@@ -6,26 +6,7 @@ from scbulkde.ut._logging import logger
 
 
 def get_engine_instance(engine_name: str):
-    """
-    Create an instance of the specified differential expression engine.
-
-    Parameters
-    ----------
-    engine_name
-        Name of the DE engine.
-    engine_params
-        Parameters for the engine.
-
-    Returns
-    -------
-    DEEngineBase
-        Instance of the DE engine.
-
-    Examples
-    --------
-    >>> from scbulkde.engines._factory import get_engine_instance
-    >>> engine = get_engine_instance(adata, "pydeseq2", {"min_counts": 20})
-    """
+    """Create an instance of the specified differential expression engine."""
     # Available DE engines
     engine_map = {
         "pydeseq2": PyDESeq2Engine,

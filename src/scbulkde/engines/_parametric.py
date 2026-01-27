@@ -1,12 +1,9 @@
-"""T-test DE engine implementing a vectorized Welch t-test.
-
-Subclasses DEEngineBase and exposes name = "t-test".
-"""
-
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
+from scipy import stats
 
 from ._base import DEEngineBase
 
@@ -47,9 +44,6 @@ class AnovaEngine(DEEngineBase):
         pd.DataFrame
             Results with columns: F_statistic, pvalue, padj, mean_expression.
         """
-        import statsmodels.api as sm
-        from scipy import stats
-
         try:
             n = metadata.shape[0]
             gene_names = counts.columns

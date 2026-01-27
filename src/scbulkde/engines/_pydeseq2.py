@@ -1,5 +1,3 @@
-"""PyDESeq2 engine."""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -37,8 +35,8 @@ class PyDESeq2Engine(DEEngineBase):
         metadata: pd.DataFrame,
         design_matrix: pd.DataFrame,
         design_formula: str,
-        alpha: float = 0.05,
-        correction_method: str = "fdr_bh",
+        alpha: float,
+        correction_method: str,
         *,
         fit_type: Literal["mean", "parametric"] = "mean",
         n_cpus: int = 16,
