@@ -46,6 +46,7 @@ def pseudobulk(
     group_key_internal = "psbulk_condition"
 
     # Label cells as 'query' or 'reference' in a new internal column
+    # Also raises ValueError if there are no cells in either query or reference
     obs = _prepare_internal_groups(
         adata=adata, group_key=group_key, group_key_internal=group_key_internal, query=query, reference=reference
     )
