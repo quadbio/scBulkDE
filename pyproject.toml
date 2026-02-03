@@ -44,6 +44,7 @@ test = [
   "formulaic",
   "pytest",
   "pytest-cov",     # For VS Code’s coverage functionality
+  "tqdm",
 ]
 doc = [
   "ipykernel",
