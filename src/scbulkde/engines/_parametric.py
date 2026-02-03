@@ -66,7 +66,7 @@ class AnovaEngine(DEEngineBase):
             # # DEBUGGING: check how many columns are zero
             # colsums = counts.sum(axis=0)
             # zero_cols = np.sum(colsums == 0)
-            # print(zero_cols)
+            # print(f"Number of zero-sum columns: {zero_cols} out of {counts.shape[1]}")
 
             row_sums = counts.sum(axis=1, keepdims=True)
             counts = counts / row_sums * 1e6
@@ -113,7 +113,14 @@ class AnovaEngine(DEEngineBase):
             # as the lfc between means of the two groups, as the coefficient is corrected for other covariates in the model.
             # NOTE: actually I noticed the lfcs are highly inflated when generating pseudoreplicates, and so is the statistic
             # maybe switch back to manual computation in the future?
-            results["log2FoldChange"] = beta_hat_full[1, :]
+            # results["log2FoldChange"] = beta_hat_full[1, :]
+
+            # NOTE: Manual computation of lfc between means of the two groups
+            query_mask = metadata["psbulk_condition"] == "query"
+            reference_mask = metadata["psbulk_condition"] == "reference"
+            mean_query = np.mean(Y[query_mask, :], axis=0)
+            mean_reference = np.mean(Y[reference_mask, :], axis=0)
+            results["log2FoldChange"] = mean_query - mean_reference
 
             # Now for plotting purposes, genes are often sorted by the statistic. This statistic is always positive,
             # which means also genes that are downregulated in query would be listed. To fix this, we multiply the stat with the sign of the lfc.
