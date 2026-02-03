@@ -48,6 +48,13 @@ def _prepare_internal_groups(
     else:
         reference = list(reference)
 
+    # Logger warning if categories appear in both query and reference
+    overlap = set(query).intersection(set(reference))
+    if overlap:
+        logger.warning(
+            f"Detected overlap between query and reference: {overlap}. Cells in these groups will be assigned to 'query'."
+        )
+
     # Subset obs to relevant cells, make a copy
     mask_query = obs[group_key].isin(query)
     mask_reference = obs[group_key].isin(reference)
