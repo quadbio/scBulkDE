@@ -119,12 +119,36 @@ def make_adata():
 
 
 @pytest.fixture
-def simple_adata(make_adata):
-    """Simple AnnData with 3 groups and replicates."""
-    return make_adata(
-        n_cells=120,
-        n_genes=20,
-        groups=["A", "B", "C"],
-        group_counts=[40, 40, 40],
-        replicate_key="batch",
-    )
+def make_obs():
+    """Factory to create obs DataFrames for testing."""
+
+    def _make_obs(
+        n_query: int = 100,
+        n_reference: int = 100,
+        query_strata: dict[str, list] | None = None,
+        reference_strata: dict[str, list] | None = None,
+        strata_columns: list[str] | None = None,
+    ):
+        """Create obs DataFrame with query/reference labels and strata."""
+        if strata_columns is None:
+            strata_columns = ["batch"]
+
+        data = {"psbulk_condition": ["query"] * n_query + ["reference"] * n_reference}
+
+        # Add strata columns
+        for col in strata_columns:
+            if query_strata and col in query_strata:
+                q_values = query_strata[col]
+            else:
+                q_values = [f"{col}_0"] * n_query
+
+            if reference_strata and col in reference_strata:
+                r_values = reference_strata[col]
+            else:
+                r_values = [f"{col}_0"] * n_reference
+
+            data[col] = q_values + r_values
+
+        return pd.DataFrame(data, index=[f"cell_{i}" for i in range(n_query + n_reference)])
+
+    return _make_obs
