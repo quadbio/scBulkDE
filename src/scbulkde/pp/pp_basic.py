@@ -10,7 +10,7 @@ from scbulkde.ut._containers import PseudobulkResult
 from scbulkde.ut._logging import logger
 from scbulkde.ut.ut_basic import (
     _aggregate_counts,
-    _build_design,
+    _build_design_formula,
     _drop_covariate,
     _get_aggregation_function,
     _prepare_internal_groups,
@@ -46,23 +46,25 @@ def pseudobulk(
     """Main function to perform pseudobulking on an AnnData object."""
     group_key_internal = "psbulk_condition"
 
-    # Label cells as 'query' or 'reference' in a new internal column
-    # Also raises ValueError if there are no cells in either query or reference
+    # Label cells as 'query' or 'reference'
+    # This also subsets the obs to only contain query and reference cells
     obs = _prepare_internal_groups(
         adata=adata, group_key=group_key, group_key_internal=group_key_internal, query=query, reference=reference
     )
     cell_counts = obs[group_key_internal].value_counts()
     logger.info(f"Using {cell_counts['query']} query and {cell_counts['reference']} reference cells for pseudobulking.")
 
-    # Validate strata and potentially drop covariates to meet sample requirements. This leads to two cases
-    # 1) There are no strata provided or all strata have been dropped. In this case no independent samples can be created
-    #    and pseudoreplicates have to be created. Using all cells as a first sample and then creating additional pseudoreplicates
-    #    is not acceptable as it would increase the dependency between the samples.
-    # 2) There are strata provided that allow to create independent samples
+    # Combine replicate_key and categorical_covariates
+    strata_list = []
+    if replicate_key is not None:
+        strata_list.append(replicate_key)
+    if categorical_covariates is not None:
+        strata_list.extend(categorical_covariates)
 
-    strata = _validate_strata(
+    # Validate strata and get filtered obs with only qualifying cells
+    strata, obs_filtered = _validate_strata(
         obs=obs,
-        strata=categorical_covariates,
+        strata=strata_list,
         min_cells=min_cells,
         min_fraction=min_fraction,
         min_coverage=min_coverage,
@@ -72,10 +74,13 @@ def pseudobulk(
         resolve_conflicts=resolve_conflicts,
     )
 
+    # Use filtered obs (contains only cells in qualifying samples)
+    obs = obs_filtered if not obs_filtered.empty else obs
+
     # Subset adata to relevant cells
     adata_sub = adata[obs.index, :]
 
-    # Handle the case where no valid strata exist
+    # Handle empty strata case
     if not strata:
         return _build_empty_pseudobulk_result(
             adata_sub=adata_sub,
@@ -96,10 +101,10 @@ def pseudobulk(
             n_cells=cell_counts,
         )
 
-    # Build sample table, design matrix, and aggregate counts
+    # Build result with filtered data
     return _build_pseudobulk_result(
         adata_sub=adata_sub,
-        obs=obs,
+        obs=obs,  # Already filtered to qualifying cells only
         strata=strata,
         group_key=group_key,
         group_key_internal=group_key_internal,
@@ -144,11 +149,13 @@ def _build_empty_pseudobulk_result(
     The sample_table and design_matrix are still properly constructed with
     the two conditions (query/reference), but pb_counts has 0 rows.
     """
+    obs_grouped = obs.groupby(group_key_internal, observed=True, sort=False)
+
     # Create empty pseudobulk counts DataFrame (0 rows, genes as columns)
     pb_counts = pd.DataFrame(columns=adata_sub.var_names)
 
     # Create the design formula (just the condition column)
-    design_formula = _build_design(
+    design_formula = _build_design_formula(
         group_key_internal=group_key_internal,
         factors_categorical=[],
         factors_continuous=[],
@@ -163,7 +170,7 @@ def _build_empty_pseudobulk_result(
     return PseudobulkResult(
         adata_sub=adata_sub,
         pb_counts=pb_counts,
-        grouped=None,
+        grouped=obs_grouped,
         sample_table=sample_table,
         design_matrix=mm,
         design_formula=design_formula,
@@ -277,7 +284,7 @@ def _build_full_rank_design(
     max_iterations = len(design_factors_categorical) + len(design_factors_continuous) + 1
 
     for _ in range(max_iterations):
-        design_formula = _build_design(
+        design_formula = _build_design_formula(
             group_key_internal=group_key_internal,
             factors_categorical=design_factors_categorical,
             factors_continuous=design_factors_continuous,
@@ -312,7 +319,7 @@ def _build_full_rank_design(
         break
 
     # Final attempt with no additional covariates
-    design_formula = _build_design(
+    design_formula = _build_design_formula(
         group_key_internal=group_key_internal,
         factors_categorical=[],
         factors_continuous=[],
@@ -321,139 +328,3 @@ def _build_full_rank_design(
     logger.info(f"Design matrix with shape {mm.shape} using minimal design formula:\n{design_formula}")
 
     return design_formula, mm
-
-    # if not strata:
-
-    #     # Warn the user that no replicate_key or covariates are provided
-    #     logger.warning("No replicate_key or categorical_covariates provided. Cannot create independent samples - returning empty pseudobulk counts.")
-
-    #     # Create empty pseudobulk counts DataFrame
-    #     pb_counts = pd.DataFrame(columns=adata.var_names)
-
-    #     # Create the design. This will just the condition column, using _build_design for consistency
-    #     design_formula = _build_design(
-    #         group_key_internal=group_key_internal,
-    #         factors_categorical=[],
-    #         factors_continuous=[],
-    #     )
-
-    #     # Create the sample table. This will just be two rows for the two conditions
-    #     sample_table = pd.DataFrame({
-    #         group_key_internal: obs[group_key_internal].unique()
-    #     })
-
-    #     # Create the design matrix
-    #     mm = model_matrix(design_formula, data=sample_table)
-
-    # else:
-
-    #     while True:
-
-    #         # Check if samples can be generated given the current strata
-    #         if _can_generate_samples(
-    #             obs,
-    #             stratify_by=strata,
-    #             min_cells=min_cells,
-    #             min_fraction=min_fraction,
-    #             min_coverage=min_coverage,
-    #             qualify_strategy=qualify_strategy,
-    #             group_key_internal=group_key_internal,
-    #         ):
-    #             break
-
-    #         # If strata empty: Either use all cells for query and reference or raise error
-    #         if not strata and resolve_conflicts:
-    #             logger.warning(f"Cannot generate samples stratifying by {strata}. Falling back to using all cells.")
-    #             break
-    #         elif not strata and not resolve_conflicts:
-    #             raise ValueError(f"Cannot generate samples stratifying by {strata}. and no covariates left to drop.")
-
-    #         # If strata not empty and not able to generate samples: Drop a covariate
-    #         strata, dropped = _drop_covariate(covariates=strata, obs=obs, covariate_strategy=covariate_strategy)
-    #         logger.warning(f"Dropped covariate: {dropped} to meet sample requirements.")
-
-    #     # Now we know which strata can be used to generate samples. Let's summarize it into a design table.
-    #     sample_factors_categorical = [group_key_internal] + strata
-    #     sample_factors_continuous = continuous_covariates if continuous_covariates is not None else []
-
-    #     obs_grouped = obs.groupby(sample_factors_categorical, observed=True, sort=False)
-
-    #     if sample_factors_continuous:
-    #         agg_func = _get_aggregation_function(continuous_aggregation)
-    #         sample_table = obs_grouped[sample_factors_continuous].agg(agg_func).reset_index()
-    #     else:
-    #         sample_table = obs_grouped.first().reset_index()[sample_factors_categorical]
-
-    #     # Based on that, we can now decide on the design formula. Here, we will use the sample table with one important
-    #     # detail: although the replicate key does not necessarily introduce collinearity in the columns of the design matrix
-    #     # it is exclusively used as a means to generate a sample stratification. In the majority of setups, it does not make
-    #     # sense to include the replicate_key in the design
-    #     # Let's also remove the group_key_internal from the design_factors here, as we will add it explicitly later with the correct reference level.
-    #     design_factors_categorical_formula = [
-    #         f for f in sample_factors_categorical if f != replicate_key and f != group_key_internal
-    #     ]
-    #     design_factors_continuous_formula = sample_factors_continuous.copy()
-
-    #     while True:
-    #         # Although the while loop should be exited at some point, this is a bit risky. Maybe let's put a safeguard in the future
-    #         design_formula = _build_design(
-    #             group_key_internal=group_key_internal,
-    #             factors_categorical=design_factors_categorical_formula,
-    #             factors_continuous=design_factors_continuous_formula,
-    #         )
-    #         mm = model_matrix(design_formula, data=sample_table)
-    #         if np.linalg.matrix_rank(mm.values) == mm.shape[1]:
-    #             logger.info(f"Design matrix with shape {mm.shape} has full rank using design formula:\n{design_formula}")
-    #             break
-
-    #         # If there are categorical factors, consume them first, as each generates n - 1 level columns
-    #         if design_factors_categorical_formula:
-    #             design_factors_categorical_formula, dropped = _drop_covariate(
-    #                 covariates=design_factors_categorical_formula, obs=sample_table, covariate_strategy=covariate_strategy
-    #             )
-    #             logger.warning(f"Dropped categorical covariate '{dropped}' to achieve full column rank.")
-    #             continue
-
-    #         # If this didn't help, consume continuous covariates. Each one only generates one column
-    #         # And it is unlikely that they cause collinearity unless they are constant. In that case the algorithm
-    #         # would converge if all constant and continuous covariates are removed
-    #         if design_factors_continuous_formula:
-    #             design_factors_continuous_formula, dropped = _drop_covariate(
-    #                 covariates=design_factors_continuous_formula,
-    #                 obs=sample_table,
-    #                 covariate_strategy="sequence_order",  # enforce sequence order for continuous
-    #             )
-    #             logger.warning(f"Dropped continuous covariate '{dropped}' to achieve full rank.")
-    #             continue
-
-    #     # Now we can finally aggregate the counts into pseudobulk samples
-    #     pb_counts = _aggregate_counts(
-    #         adata=adata, grouped_obs=obs_grouped, layer=layer, layer_aggregation=layer_aggregation
-    #     )
-
-    # # We want to also store the original per-cell count matrix because it might be needed for generating pseudoreplicates
-    # adata_sub = adata[obs.index, :]
-
-    # return PseudobulkResult(
-    #     adata_sub=adata_sub,
-    #     pb_counts=pb_counts,
-    #     grouped=obs_grouped,
-    #     sample_table=sample_table,
-    #     design_matrix=mm,
-    #     design_formula=design_formula,
-    #     group_key=group_key,
-    #     group_key_internal=group_key_internal,
-    #     query=query,
-    #     reference=reference,
-    #     strata=strata,
-    #     layer=layer,
-    #     layer_aggregation=layer_aggregation,
-    #     categorical_covariates=categorical_covariates,
-    #     continuous_covariates=continuous_covariates,
-    #     continuous_aggregation=continuous_aggregation,
-    #     min_cells=min_cells,
-    #     min_fraction=min_fraction,
-    #     min_coverage=min_coverage,
-    #     qualify_strategy=qualify_strategy,
-    #     n_cells=cell_counts,
-    # )

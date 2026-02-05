@@ -4,17 +4,18 @@ from ._performance import performance, set_performance_enabled
 from .ut_basic import (
     _aggregate_counts,
     _aggregate_results,
-    _build_design,
-    _can_generate_samples,
+    _build_design_formula,
     _compute_required_samples,
     _drop_covariate,
     _fraction_expressing,
     _generate_pseudoreplicate,
+    _generate_samples,
     _get_aggregation_function,
     _get_X_and_var_names,
     _prepare_internal_groups,
     _select_groups,
     _select_top_n,
+    _validate_strata,
 )
 
 __all__ = [
@@ -26,8 +27,9 @@ __all__ = [
     "performance",
     "set_performance_enabled",
     "_prepare_internal_groups",
-    "_can_generate_samples",
-    "_build_design",
+    "_validate_strata",
+    "_generate_samples",
+    "_build_design_formula",
     "_drop_covariate",
     "_get_aggregation_function",
     "_compute_required_samples",
