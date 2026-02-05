@@ -73,6 +73,56 @@ def _prepare_internal_groups(
 
 
 @performance(logger=logger)
+def _validate_strata(
+    obs: pd.DataFrame,
+    strata: list[str],
+    min_cells: int | None,
+    min_fraction: float | None,
+    min_coverage: float | None,
+    qualify_strategy: str,
+    covariate_strategy: str,
+    group_key_internal: str,
+    resolve_conflicts: bool,
+) -> list[str]:
+    """Validate strata and reduce by dropping covariates if necessary."""
+    # No strata provided
+    if not strata:
+        logger.warning(
+            "No replicate_key or categorical_covariates provided."
+            "Cannot create independent samples - returning empty pseudobulk counts."
+        )
+        return []
+
+    while True:
+        # Check if samples can be generated given the current strata
+        if _can_generate_samples(
+            obs,
+            stratify_by=strata,
+            min_cells=min_cells,
+            min_fraction=min_fraction,
+            min_coverage=min_coverage,
+            qualify_strategy=qualify_strategy,
+            group_key_internal=group_key_internal,
+        ):
+            return strata
+
+        # If there is no covariate left to drop, either return empty or raise error
+        if not strata:
+            if resolve_conflicts:
+                logger.warning(
+                    f"Cannot generate samples stratifying by {strata}."
+                    "Cannot generate samples - returning empty pseudobulk counts."
+                )
+                return []
+            else:
+                raise ValueError(f"Cannot generate samples stratifying by {strata} and no covariates left to drop.")
+
+        # Drop a covariate based on the specified strategy
+        strata, dropped = _drop_covariate(covariates=strata, obs=obs, ovariate_strategy=covariate_strategy)
+        logger.warning(f"Dropped covariate: {dropped} to meet sample requirements.")
+
+
+@performance(logger=logger)
 def _can_generate_samples(
     obs: pd.DataFrame,
     stratify_by: Sequence[str],
@@ -87,37 +137,40 @@ def _can_generate_samples(
         return False
 
     for label in ("query", "reference"):
-        # Subset to the relevant group. Has to be at least one cell due to earlier checks
         obs_sub = obs[obs[group_key_internal] == label]
         total_cells = len(obs_sub)
 
         grouped = obs_sub.groupby(list(stratify_by)).size()
-        counts = grouped.values
 
         qualifying = []
-        for n_cells in counts:
-            # Consider min_cells/min_fraction as fulfilled if None
-            min_cells_ok = True if min_cells is None else n_cells >= min_cells
-            min_fraction_ok = True if min_fraction is None else (n_cells / total_cells) >= min_fraction
-            if qualify_strategy == "and":
-                qualifies = min_cells_ok and min_fraction_ok
+        for n_cells in grouped.values:
+            checks = []
+
+            if min_cells is not None:
+                checks.append(n_cells >= min_cells)
+
+            if min_fraction is not None:
+                checks.append((n_cells / total_cells) >= min_fraction)
+
+            if not checks:
+                qualifies = False
+            elif qualify_strategy == "and":
+                qualifies = all(checks)
             elif qualify_strategy == "or":
-                qualifies = min_cells_ok or min_fraction_ok
+                qualifies = any(checks)
             else:
                 raise ValueError("qualify_strategy must be 'and' or 'or'")
+
             if qualifies:
                 qualifying.append(n_cells)
 
-        # If there are no qualifying cells, return false
         if not qualifying:
             return False
 
-        # If there are some, check the total coverage
         coverage = sum(qualifying) / total_cells
         if min_coverage is not None and coverage < min_coverage:
             return False
 
-    # If total coverage is met for both query and reference, return True
     return True
 
 
