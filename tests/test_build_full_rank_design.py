@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from scbulkde.pp.pp_basic import _build_full_rank_design
+
 
 class TestBuildFullRankDesign:
     """Tests for _build_full_rank_design logic."""
@@ -33,7 +35,6 @@ class TestBuildFullRankDesign:
 
     def test_full_rank_design_returns_immediately(self, sample_table_full_rank):
         """When design is full rank, should return without dropping."""
-        from scbulkde.pp.pp_basic import _build_full_rank_design
 
         formula, mm = _build_full_rank_design(
             sample_table=sample_table_full_rank,
@@ -50,7 +51,6 @@ class TestBuildFullRankDesign:
 
     def test_rank_deficient_drops_categorical_first(self, sample_table_rank_deficient):
         """When rank deficient, should drop categorical covariates first."""
-        from scbulkde.pp.pp_basic import _build_full_rank_design
 
         formula, mm = _build_full_rank_design(
             sample_table=sample_table_rank_deficient,
@@ -69,7 +69,6 @@ class TestBuildFullRankDesign:
 
     def test_drops_continuous_after_categorical(self):
         """Should drop categorical first, then continuous."""
-        from scbulkde.pp.pp_basic import _build_full_rank_design
 
         # Create data where we have rank deficiency
         sample_table = pd.DataFrame(
@@ -127,7 +126,6 @@ class TestBuildFullRankDesign:
 
     def test_covariate_strategy_sequence_order(self):
         """sequence_order should drop from end of list first."""
-        from scbulkde.pp.pp_basic import _build_full_rank_design
 
         sample_table = pd.DataFrame(
             {
@@ -153,7 +151,6 @@ class TestBuildFullRankDesign:
 
     def test_covariate_strategy_most_levels(self):
         """most_levels should drop covariate with most levels first."""
-        from scbulkde.pp.pp_basic import _build_full_rank_design
 
         # The "few" category cause the rank deficiency, but "many" has more levels.
         # When using most_levels strategy, "many" should be dropped first, and then
@@ -182,7 +179,6 @@ class TestBuildFullRankDesign:
 
     def test_continuous_dropped_with_sequence_order_strategy(self):
         """When dropping continuous, always use sequence_order."""
-        from scbulkde.pp.pp_basic import _build_full_rank_design
 
         sample_table = pd.DataFrame(
             {
@@ -206,7 +202,6 @@ class TestBuildFullRankDesign:
 
     def test_fallback_to_minimal_design(self):
         """If all covariates dropped, should return minimal design with just condition."""
-        from scbulkde.pp.pp_basic import _build_full_rank_design
 
         # Create highly confounded data
         sample_table = pd.DataFrame(
@@ -231,7 +226,6 @@ class TestBuildFullRankDesign:
 
     def test_empty_covariates_returns_minimal_design(self):
         """With no covariates, should return just condition."""
-        from scbulkde.pp.pp_basic import _build_full_rank_design
 
         sample_table = pd.DataFrame(
             {

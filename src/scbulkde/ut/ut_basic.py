@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
+from formulaic import model_matrix
 
 from scbulkde.ut._logging import logger
 from scbulkde.ut._performance import performance
@@ -303,6 +304,67 @@ def _get_aggregation_function(agg: str | Callable | list, allow: set[str] | None
         return np.median
 
     raise ValueError(f"Aggregation '{agg}' not supported.")
+
+
+def _build_full_rank_design(
+    sample_table: pd.DataFrame,
+    group_key_internal: str,
+    design_factors_categorical: list[str],
+    design_factors_continuous: list[str],
+    covariate_strategy: str,
+) -> tuple[str, pd.DataFrame]:
+    """
+    Build a full-rank design matrix, dropping covariates if necessary.
+
+    Returns the design formula and design matrix.
+    """
+    max_iterations = len(design_factors_categorical) + len(design_factors_continuous) + 1
+
+    for _ in range(max_iterations):
+        design_formula = _build_design_formula(
+            group_key_internal=group_key_internal,
+            factors_categorical=design_factors_categorical,
+            factors_continuous=design_factors_continuous,
+        )
+        mm = model_matrix(design_formula, data=sample_table)
+
+        if np.linalg.matrix_rank(mm.values) == mm.shape[1]:
+            logger.info(f"Design matrix with shape {mm.shape} has full rank using design formula:\n{design_formula}")
+            return design_formula, mm
+
+        # Drop categorical covariates first (they generate more columns)
+        if design_factors_categorical:
+            design_factors_categorical, dropped = _drop_covariate(
+                covariates=design_factors_categorical,
+                obs=sample_table,
+                covariate_strategy=covariate_strategy,
+            )
+            logger.warning(f"Dropped categorical covariate '{dropped}' to achieve full column rank.")
+            continue
+
+        # Then drop continuous covariates
+        if design_factors_continuous:
+            design_factors_continuous, dropped = _drop_covariate(
+                covariates=design_factors_continuous,
+                obs=sample_table,
+                covariate_strategy="sequence_order",
+            )
+            logger.warning(f"Dropped continuous covariate '{dropped}' to achieve full rank.")
+            continue
+
+        # No more covariates to drop - this shouldn't happen with just the intercept
+        break
+
+    # Final attempt with no additional covariates
+    design_formula = _build_design_formula(
+        group_key_internal=group_key_internal,
+        factors_categorical=[],
+        factors_continuous=[],
+    )
+    mm = model_matrix(design_formula, data=sample_table)
+    logger.info(f"Design matrix with shape {mm.shape} using minimal design formula:\n{design_formula}")
+
+    return design_formula, mm
 
 
 # ================= Helper functions for tl ================= #
