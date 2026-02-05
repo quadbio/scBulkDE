@@ -130,10 +130,7 @@ def _validate_strata(
         # If no covariates left
         if not strata:
             if resolve_conflicts:
-                logger.warning(
-                    "Cannot generate samples with any stratification. "
-                    "Returning empty pseudobulk counts - pseudoreplicates will be needed."
-                )
+                logger.warning("Cannot generate samples with any stratification. Returning empty pseudobulk counts.")
                 return [], pd.DataFrame()
             else:
                 raise ValueError("Cannot generate samples with any stratification and no covariates left to drop.")
@@ -195,7 +192,6 @@ def _generate_samples(
         # Work directly with the full obs DataFrame using the mask
         grouped = obs.loc[condition_mask].groupby(list(stratify_by), observed=True, sort=False)
         group_sizes = grouped.size()
-
         # Vectorized qualification check
         if min_cells is not None and min_fraction is not None:
             cell_check = group_sizes >= min_cells
