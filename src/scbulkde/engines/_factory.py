@@ -1,6 +1,6 @@
 """Factory for creating differential expression engine instances."""
 
-from scbulkde.engines._parametric import AnovaEngine
+from scbulkde.engines._parametric import AnovaEngine, EbayesEngine
 from scbulkde.engines._pydeseq2 import PyDESeq2Engine
 from scbulkde.ut._logging import logger
 
@@ -11,6 +11,7 @@ def get_engine_instance(engine_name: str):
     engine_map = {
         "pydeseq2": PyDESeq2Engine,
         "anova": AnovaEngine,
+        "ebayes": EbayesEngine,
     }
 
     engine_name_lower = engine_name.lower()

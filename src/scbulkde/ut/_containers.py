@@ -46,13 +46,18 @@ class PseudobulkResult:
     # Diagnostics
     n_cells: dict[str, int] | None = None
 
+    @property
+    def n_samples(self) -> int:
+        """Number of pseudobulk samples."""
+        return len(self.pb_counts)
+
     def __repr__(self) -> str:
         return (
             f"PseudobulkResult(\n"
-            f"n_samples={self.counts.shape[0]},\n"
-            f"n_genes={self.counts.shape[1]},\n"
-            f"strata={list(self.strata)},\n"
-            f"design_formula='{self.design_formula}'\n"
+            f"  n_samples={self.n_samples},\n"
+            f"  n_genes={self.pb_counts.shape[1] if not self.pb_counts.empty else 0},\n"
+            f"  strata={list(self.strata)},\n"
+            f"  design_formula='{self.design_formula}'\n"
             f")"
         )
 
@@ -75,6 +80,8 @@ class DEResult:
         DE engine used.
     used_pseudoreplicates
         Whether pseudoreplicates were generated.
+    used_single_cell
+        Whether single-cell level testing was performed.
     n_repetitions
         Number of repetitions run (1 if no pseudoreplicates).
     repetition_results
@@ -89,6 +96,7 @@ class DEResult:
     design: str
     engine: str
     used_pseudoreplicates: bool = False
+    used_single_cell: bool = False
     n_repetitions: int = 1
     repetition_results: dict[str, pd.DataFrame] = field(default_factory=dict)
     repetition_stats: dict[str, pd.DataFrame] = field(default_factory=dict)
@@ -103,10 +111,25 @@ class DEResult:
         """Number of genes tested."""
         return len(self.results)
 
+    @property
+    def fallback_used(self) -> str | None:
+        """Return which fallback was used, if any."""
+        if self.used_pseudoreplicates:
+            return "pseudoreplicates"
+        if self.used_single_cell:
+            return "single_cell"
+        return None
+
     def __repr__(self) -> str:
         rep_info = ""
         if self.used_pseudoreplicates:
             rep_info = f"\n  n_repetitions={self.n_repetitions},"
+
+        fallback_info = ""
+        if self.used_single_cell:
+            fallback_info = "\n  fallback='single_cell',"
+        elif self.used_pseudoreplicates:
+            fallback_info = "\n  fallback='pseudoreplicates',"
 
         return (
             f"DEResult(\n"
@@ -115,8 +138,7 @@ class DEResult:
             f"  design='{self.design}',\n"
             f"  query='{self.query}',\n"
             f"  reference='{self.reference}',\n"
-            f"  engine='{self.engine}',\n"
-            f"  used_pseudoreplicates={self.used_pseudoreplicates},{rep_info}\n"
+            f"  engine='{self.engine}',{fallback_info}{rep_info}\n"
             f")"
         )
 
@@ -125,41 +147,19 @@ class DEResult:
         return self.results.copy()
 
     def get_repetition_stats(self, repetition: int | str) -> pd.DataFrame:
-        """Get sample statistics for a specific repetition.
-
-        Parameters
-        ----------
-        repetition
-            Repetition index (0-based) or string key.
-
-        Returns
-        -------
-        pd.DataFrame
-            Sample statistics for that repetition.
-        """
+        """Get sample statistics for a specific repetition."""
         if not self.used_pseudoreplicates:
             raise ValueError("No pseudoreplicates were used.")
         key = str(repetition)
         if key not in self.repetition_stats:
-            raise KeyError(f"Repetition '{key}' not found. Available: {list(self.repetition_stats.keys())}")
+            raise KeyError(f"Repetition '{key}' not found.")
         return self.repetition_stats[key].copy()
 
     def get_repetition_results(self, repetition: int | str) -> pd.DataFrame:
-        """Get DE results for a specific repetition.
-
-        Parameters
-        ----------
-        repetition
-            Repetition index (0-based) or string key.
-
-        Returns
-        -------
-        pd.DataFrame
-            DE results for that repetition.
-        """
+        """Get DE results for a specific repetition."""
         if not self.used_pseudoreplicates:
             raise ValueError("No pseudoreplicates were used.")
         key = str(repetition)
         if key not in self.repetition_results:
-            raise KeyError(f"Repetition '{key}' not found. Available: {list(self.repetition_results.keys())}")
+            raise KeyError(f"Repetition '{key}' not found.")
         return self.repetition_results[key].copy()
