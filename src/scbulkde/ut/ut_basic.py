@@ -84,7 +84,7 @@ def _validate_strata(
     covariate_strategy: str,
     group_key_internal: str,
     resolve_conflicts: bool,
-) -> tuple[list[str], pd.DataFrame]:
+) -> tuple[list[str], pd.DataFrame, pd.DataFrame]:
     """Validate strata and return filtered obs with only qualifying cells.
 
     Returns
@@ -93,6 +93,8 @@ def _validate_strata(
         List of strata that can generate valid samples
     filtered_obs : pd.DataFrame
         obs filtered to only cells in qualifying samples (empty if no valid strata)
+    sample_stats : pd.DataFrame
+        Sample-level statistics (empty if no valid strata)
     """
     # Convert None to empty list
     if strata is None:
@@ -106,11 +108,11 @@ def _validate_strata(
             "No replicate_key or categorical_covariates provided. "
             "Cannot create independent samples - returning empty pseudobulk counts."
         )
-        return [], pd.DataFrame()
+        return [], pd.DataFrame(), pd.DataFrame()
 
     while True:
         # Check if samples can be generated and get filtered obs
-        can_generate, filtered_obs = _generate_samples(
+        can_generate, filtered_obs, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=strata,
             min_cells=min_cells,
@@ -122,7 +124,7 @@ def _validate_strata(
 
         if can_generate:
             logger.info(f"Valid strata found: {strata}. Kept {len(filtered_obs)} cells in qualifying samples.")
-            return strata, filtered_obs
+            return strata, filtered_obs, sample_stats
 
         # Drop a covariate
         strata, dropped = _drop_covariate(covariates=strata, obs=obs, covariate_strategy=covariate_strategy)
@@ -132,7 +134,7 @@ def _validate_strata(
         if not strata:
             if resolve_conflicts:
                 logger.warning("Cannot generate samples with any stratification. Returning empty pseudobulk counts.")
-                return [], pd.DataFrame()
+                return [], pd.DataFrame(), pd.DataFrame()
             else:
                 raise ValueError("Cannot generate samples with any stratification and no covariates left to drop.")
 
@@ -146,7 +148,7 @@ def _generate_samples(
     min_coverage: float | None,
     qualify_strategy: str,
     group_key_internal: str,
-) -> tuple[bool, pd.DataFrame]:
+) -> tuple[bool, pd.DataFrame, pd.DataFrame]:
     """Check if samples can be generated and return filtered obs with only qualifying cells.
 
     Parameters
@@ -173,26 +175,36 @@ def _generate_samples(
     filtered_obs : pd.DataFrame
         obs DataFrame filtered to only cells in qualifying samples
         (empty if can't generate)
+    sample_stats : pd.DataFrame
+        DataFrame with sample-level statistics including:
+        - stratify_by columns (as index or columns)
+        - group_key_internal: condition label
+        - n_cells: number of cells in this sample
+        - n_cells_condition: total cells in the condition
+        - fraction: fraction of cells (n_cells / n_cells_condition)
+        - coverage: coverage of the condition (for all qualifying samples)
     """
     if not stratify_by:
-        return False, pd.DataFrame()
+        return False, pd.DataFrame(), pd.DataFrame()
 
     # Pre-create masks for both conditions
     query_mask = obs[group_key_internal] == "query"
     reference_mask = obs[group_key_internal] == "reference"
 
     qualifying_indices = []
+    sample_stats_list = []
 
-    for _label, condition_mask in [("query", query_mask), ("reference", reference_mask)]:
+    for label, condition_mask in [("query", query_mask), ("reference", reference_mask)]:
         total_cells = condition_mask.sum()
 
         if total_cells == 0:
-            return False, pd.DataFrame()
+            return False, pd.DataFrame(), pd.DataFrame()
 
         # Get cell counts per stratum - use observed=True to avoid empty groups
         # Work directly with the full obs DataFrame using the mask
         grouped = obs.loc[condition_mask].groupby(list(stratify_by), observed=True, sort=False)
         group_sizes = grouped.size()
+
         # Vectorized qualification check
         if min_cells is not None and min_fraction is not None:
             cell_check = group_sizes >= min_cells
@@ -210,20 +222,28 @@ def _generate_samples(
             qualifying_mask = (group_sizes / total_cells) >= min_fraction
         else:
             # No requirements - shouldn't happen, treat as none qualifying
-            return False, pd.DataFrame()
+            return False, pd.DataFrame(), pd.DataFrame()
 
         # Filter to qualifying groups
         qualifying_groups = group_sizes[qualifying_mask]
 
         # Check if any groups qualify
         if len(qualifying_groups) == 0:
-            return False, pd.DataFrame()
+            return False, pd.DataFrame(), pd.DataFrame()
 
         # Check coverage requirement
         qualifying_cell_count = qualifying_groups.sum()
         coverage = qualifying_cell_count / total_cells
         if min_coverage is not None and coverage < min_coverage:
-            return False, pd.DataFrame()
+            return False, pd.DataFrame(), pd.DataFrame()
+
+        # Build sample statistics for qualifying groups
+        stats_df = qualifying_groups.reset_index(name="n_cells")
+        stats_df[group_key_internal] = label
+        stats_df["n_cells_condition"] = total_cells
+        stats_df["fraction"] = stats_df["n_cells"] / total_cells
+        stats_df["coverage"] = coverage
+        sample_stats_list.append(stats_df)
 
         # Build mask for cells in qualifying groups
         if len(stratify_by) == 1:
@@ -253,9 +273,13 @@ def _generate_samples(
         all_qualifying_indices = np.concatenate([idx.values for idx in qualifying_indices])
         # Create filtered dataframe using iloc with sorted unique indices for efficiency
         filtered_obs = obs.loc[all_qualifying_indices]
-        return True, filtered_obs
+
+        # Combine sample statistics from both conditions
+        sample_stats = pd.concat(sample_stats_list, ignore_index=True)
+
+        return True, filtered_obs, sample_stats
     else:
-        return False, pd.DataFrame()
+        return False, pd.DataFrame(), pd.DataFrame()
 
 
 def _build_design_formula(group_key_internal: str, factors_categorical: list, factors_continuous: list) -> str:

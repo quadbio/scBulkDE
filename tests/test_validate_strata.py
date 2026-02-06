@@ -14,7 +14,7 @@ class TestValidateStrata:
         """When strata is None, should return empty results."""
         obs = pd.DataFrame({"condition": ["query", "reference"], "batch": ["A", "A"]})
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=None,
             min_cells=1,
@@ -29,12 +29,14 @@ class TestValidateStrata:
         assert valid_strata == []
         assert isinstance(filtered, pd.DataFrame)
         assert len(filtered) == 0
+        assert isinstance(sample_stats, pd.DataFrame)
+        assert len(sample_stats) == 0
 
     def test_empty_strata_list_returns_empty(self):
         """When strata is empty list, should return empty results."""
         obs = pd.DataFrame({"condition": ["query", "reference"], "batch": ["A", "A"]})
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=[],
             min_cells=1,
@@ -49,6 +51,7 @@ class TestValidateStrata:
         assert valid_strata == []
         assert isinstance(filtered, pd.DataFrame)
         assert len(filtered) == 0
+        assert len(sample_stats) == 0
 
     def test_returns_strata_when_all_requirements_met(self):
         """When initial strata meet all requirements, should return them without dropping."""
@@ -61,7 +64,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch", "donor"],
             min_cells=5,
@@ -103,7 +106,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, _ = _validate_strata(
+        valid_strata, _, _ = _validate_strata(
             obs=obs,
             strata=["batch", "donor", "tissue"],
             min_cells=15,
@@ -132,7 +135,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch", "donor", "tissue"],
             min_cells=40,
@@ -186,7 +189,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch"],
             min_cells=1000,
@@ -238,7 +241,7 @@ class TestValidateStrata:
 
         input_strata = ["batch", "donor", "tissue"]
 
-        valid_strata, _ = _validate_strata(
+        valid_strata, _, _ = _validate_strata(
             obs=obs,
             strata=input_strata,
             min_cells=10,
@@ -263,7 +266,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered_validate = _validate_strata(
+        valid_strata, filtered_validate, _ = _validate_strata(
             obs=obs,
             strata=["batch", "donor"],
             min_cells=10,
@@ -275,7 +278,7 @@ class TestValidateStrata:
             resolve_conflicts=True,
         )
 
-        can_gen, filtered_gen = _generate_samples(
+        can_gen, filtered_gen, _ = _generate_samples(
             obs=obs,
             stratify_by=valid_strata,
             min_cells=10,
@@ -308,7 +311,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch", "donor"],
             min_cells=15,
@@ -340,7 +343,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch"],
             min_cells=50,
@@ -372,7 +375,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch"],
             min_cells=10,
@@ -401,7 +404,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch", "donor", "tissue"],
             min_cells=80,
@@ -425,7 +428,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch"],
             min_cells=None,
@@ -452,7 +455,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch"],
             min_cells=50,
@@ -473,7 +476,7 @@ class TestValidateStrata:
         """Should return empty when one condition has no cells."""
         obs = pd.DataFrame({"condition": ["query"] * 20, "batch": ["A"] * 10 + ["B"] * 10, "cell_id": range(20)})
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch"],
             min_cells=5,
@@ -499,7 +502,7 @@ class TestValidateStrata:
             index=range(1000, 1040),
         )
 
-        _, filtered = _validate_strata(
+        _, filtered, _ = _validate_strata(
             obs=obs,
             strata=["batch"],
             min_cells=5,
@@ -524,7 +527,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch"],
             min_cells=10,
@@ -548,7 +551,7 @@ class TestValidateStrata:
             }
         )
 
-        valid_strata, filtered = _validate_strata(
+        valid_strata, filtered, sample_stats = _validate_strata(
             obs=obs,
             strata=["batch"],
             min_cells=5,
@@ -585,3 +588,32 @@ class TestValidateStrata:
                 group_key_internal="condition",
                 resolve_conflicts=False,
             )
+
+    def test_sample_stats_returned_correctly(self):
+        """Test that sample_stats is returned and contains expected columns."""
+        obs = pd.DataFrame(
+            {
+                "condition": ["query"] * 20 + ["reference"] * 20,
+                "batch": ["A"] * 10 + ["B"] * 10 + ["A"] * 10 + ["B"] * 10,
+                "cell_id": range(40),
+            }
+        )
+
+        valid_strata, filtered, sample_stats = _validate_strata(
+            obs=obs,
+            strata=["batch"],
+            min_cells=5,
+            min_fraction=None,
+            min_coverage=None,
+            qualify_strategy="and",
+            covariate_strategy="sequence_order",
+            group_key_internal="condition",
+            resolve_conflicts=True,
+        )
+
+        assert len(valid_strata) > 0
+        assert isinstance(sample_stats, pd.DataFrame)
+        assert "n_cells" in sample_stats.columns
+        assert "n_cells_condition" in sample_stats.columns
+        assert "fraction" in sample_stats.columns
+        assert "coverage" in sample_stats.columns

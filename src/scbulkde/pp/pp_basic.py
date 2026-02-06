@@ -61,7 +61,7 @@ def pseudobulk(
         strata_list.extend(categorical_covariates)
 
     # Validate strata and get filtered obs with only qualifying cells
-    strata, obs_filtered = _validate_strata(
+    strata, obs_filtered, sample_stats = _validate_strata(
         obs=obs,
         strata=strata_list,
         min_cells=min_cells,
@@ -105,6 +105,7 @@ def pseudobulk(
         adata_sub=adata_sub,
         obs=obs,
         strata=strata,
+        sample_stats=sample_stats,
         group_key=group_key,
         group_key_internal=group_key_internal,
         query=query,
@@ -195,6 +196,7 @@ def _build_pseudobulk_result(
     adata_sub: ad.AnnData,
     obs: pd.DataFrame,
     strata: list[str],
+    sample_stats: pd.DataFrame,
     group_key: str,
     group_key_internal: str,
     query: str | Sequence[str],
@@ -224,6 +226,14 @@ def _build_pseudobulk_result(
         sample_table = obs_grouped[sample_factors_continuous].agg(agg_func).reset_index()
     else:
         sample_table = obs_grouped.first().reset_index()[sample_factors_categorical]
+
+    # Merge sample statistics into sample_table
+    merge_keys = [group_key_internal] + strata
+    sample_table = sample_table.merge(
+        sample_stats[merge_keys + ["n_cells", "n_cells_condition", "fraction", "coverage"]],
+        on=merge_keys,
+        how="left",
+    )
 
     # Build design formula, excluding replicate_key and group_key_internal
     design_factors_categorical = [f for f in strata if f != replicate_key]

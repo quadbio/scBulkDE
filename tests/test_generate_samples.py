@@ -9,11 +9,11 @@ import pytest
 from scbulkde.ut.ut_basic import _generate_samples
 
 
-class TestCanGenerateSamples:
+class TestGenerateSamples:
     def test_empty_stratify_by_returns_false_and_empty_df(self):
         obs = pd.DataFrame({"condition": ["query", "query", "reference"], "batch": ["A", "A", "B"]})
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=[],
             min_cells=1,
@@ -26,11 +26,13 @@ class TestCanGenerateSamples:
         assert can_generate is False
         assert isinstance(filtered, pd.DataFrame)
         assert len(filtered) == 0
+        assert isinstance(sample_stats, pd.DataFrame)
+        assert len(sample_stats) == 0
 
     def test_no_query_cells_returns_false(self):
         obs = pd.DataFrame({"condition": ["reference", "reference", "reference"], "batch": ["A", "B", "C"]})
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=1,
@@ -42,11 +44,12 @@ class TestCanGenerateSamples:
 
         assert can_generate is False
         assert len(filtered) == 0
+        assert len(sample_stats) == 0
 
     def test_no_reference_cells_returns_false(self):
         obs = pd.DataFrame({"condition": ["query", "query", "query"], "batch": ["A", "B", "C"]})
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=1,
@@ -58,6 +61,7 @@ class TestCanGenerateSamples:
 
         assert can_generate is False
         assert len(filtered) == 0
+        assert len(sample_stats) == 0
 
     def test_min_cells_only_filters_small_groups(self):
         obs = pd.DataFrame(
@@ -68,7 +72,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=5,
@@ -93,7 +97,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=10,
@@ -115,7 +119,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=None,
@@ -140,7 +144,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=None,
@@ -162,7 +166,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=10,
@@ -189,7 +193,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=10,
@@ -232,7 +236,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate_pass, _ = _generate_samples(
+        can_generate_pass, _, _ = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=50,
@@ -242,7 +246,7 @@ class TestCanGenerateSamples:
             group_key_internal="condition",
         )
 
-        can_generate_fail, _ = _generate_samples(
+        can_generate_fail, _, _ = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=50,
@@ -264,7 +268,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=50,
@@ -285,7 +289,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=50,
@@ -307,7 +311,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=5,
@@ -337,7 +341,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch", "donor"],
             min_cells=5,
@@ -367,7 +371,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch", "donor"],
             min_cells=10,
@@ -392,7 +396,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch", "donor", "tissue"],
             min_cells=5,
@@ -415,7 +419,7 @@ class TestCanGenerateSamples:
             index=range(100, 140),
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=10,
@@ -438,7 +442,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=10,
@@ -465,7 +469,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=10,
@@ -482,7 +486,7 @@ class TestCanGenerateSamples:
     def test_empty_obs_returns_false(self):
         obs = pd.DataFrame({"condition": pd.Series([], dtype=str), "batch": pd.Series([], dtype=str)})
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=1,
@@ -504,7 +508,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=5,
@@ -527,7 +531,7 @@ class TestCanGenerateSamples:
         )
 
         try:
-            can_generate, filtered = _generate_samples(
+            can_generate, filtered, sample_stats = _generate_samples(
                 obs=obs,
                 stratify_by=["batch"],
                 min_cells=5,
@@ -546,7 +550,7 @@ class TestCanGenerateSamples:
             {"condition": ["query"] * 10 + ["reference"] * 10, "batch": ["A"] * 10 + ["A"] * 10, "cell_id": range(20)}
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=None,
@@ -569,7 +573,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch", "donor"],
             min_cells=5,
@@ -590,7 +594,7 @@ class TestCanGenerateSamples:
             }
         )
 
-        can_generate, filtered = _generate_samples(
+        can_generate, filtered, sample_stats = _generate_samples(
             obs=obs,
             stratify_by=["batch"],
             min_cells=5,
@@ -603,3 +607,61 @@ class TestCanGenerateSamples:
         if can_generate:
             assert "query" in filtered["condition"].values
             assert "reference" in filtered["condition"].values
+
+    def test_sample_stats_contains_expected_columns(self):
+        """Test that sample_stats DataFrame contains the new statistics columns."""
+        obs = pd.DataFrame(
+            {
+                "condition": ["query"] * 20 + ["reference"] * 20,
+                "batch": ["A"] * 10 + ["B"] * 10 + ["A"] * 10 + ["B"] * 10,
+                "cell_id": range(40),
+            }
+        )
+
+        can_generate, filtered, sample_stats = _generate_samples(
+            obs=obs,
+            stratify_by=["batch"],
+            min_cells=5,
+            min_fraction=None,
+            min_coverage=None,
+            qualify_strategy="and",
+            group_key_internal="condition",
+        )
+
+        assert can_generate is True
+        assert "n_cells" in sample_stats.columns
+        assert "n_cells_condition" in sample_stats.columns
+        assert "fraction" in sample_stats.columns
+        assert "coverage" in sample_stats.columns
+        assert "condition" in sample_stats.columns
+        assert "batch" in sample_stats.columns
+
+    def test_sample_stats_values_are_correct(self):
+        """Test that sample_stats values are computed correctly."""
+        obs = pd.DataFrame(
+            {
+                "condition": ["query"] * 20 + ["reference"] * 20,
+                "batch": ["A"] * 10 + ["B"] * 10 + ["A"] * 10 + ["B"] * 10,
+                "cell_id": range(40),
+            }
+        )
+
+        can_generate, filtered, sample_stats = _generate_samples(
+            obs=obs,
+            stratify_by=["batch"],
+            min_cells=5,
+            min_fraction=None,
+            min_coverage=None,
+            qualify_strategy="and",
+            group_key_internal="condition",
+        )
+
+        assert can_generate is True
+        # Each batch should have 10 cells per condition
+        assert all(sample_stats["n_cells"] == 10)
+        # Total cells per condition is 20
+        assert all(sample_stats["n_cells_condition"] == 20)
+        # Fraction is 10/20 = 0.5
+        assert all(sample_stats["fraction"] == 0.5)
+        # Coverage is 1.0 (all cells qualify)
+        assert all(sample_stats["coverage"] == 1.0)
