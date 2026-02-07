@@ -116,7 +116,7 @@ def de(
     # Check if I need to fall back to pseudoreplicates or single-cell DE.
     # This is the case when either condition has fewer than min_samples samples
     needs_fallback = any(v > 0 for v in required_samples.values())
-    print(needs_fallback)
+
     # Case 1: Sufficient samples exist
     if not needs_fallback:
         logger.info(f"Running DE with {engine} engine (sufficient samples)...")
@@ -198,6 +198,8 @@ def _count_existing_samples(
     if isinstance(idx, pd.MultiIndex):
         values = idx.to_frame(index=False).values.ravel()
     else:
+        # Critical: If the only group key is the condition, no valid samples exist and the index
+        # is a SingleIndex
         return {
             "query": 0,
             "reference": 0,

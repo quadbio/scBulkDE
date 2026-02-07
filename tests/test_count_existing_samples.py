@@ -10,21 +10,20 @@ from scbulkde.tl.tl_basic import _count_existing_samples
 class TestCountExistingSamples:
     """Tests for _count_existing_samples."""
 
-    def test_single_column_groupby_counts_correctly(self):
+    def test_grouped_by_condition_only_returns_no_valid_samples(self):
         """Should count samples when grouped by single column."""
         obs = pd.DataFrame(
             {
                 "psbulk_condition": ["query", "query", "reference", "reference", "reference"],
-                "cell_id": range(5),
             }
         )
         grouped = obs.groupby("psbulk_condition", observed=True, sort=False)
 
         result = _count_existing_samples(grouped)
 
-        # Should count number of groups, not number of cells
-        # With single column groupby on psbulk_condition, there are 2 groups
-        assert result == {"query": 1, "reference": 1}
+        # When grouped by condition only, the function should return 0 for both query and reference
+        # Because then no strata have been found to generate independent samples and all cells are used
+        assert result == {"query": 0, "reference": 0}
 
     def test_multi_column_groupby_counts_correctly(self):
         """Should count samples when grouped by multiple columns."""

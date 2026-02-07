@@ -146,8 +146,15 @@ def _build_empty_pseudobulk_result(
     """
     Build a PseudobulkResult with empty pb_counts when no valid strata exist.
 
-    The sample_table and design_matrix are still properly constructed with
-    the two conditions (query/reference), but pb_counts has 0 rows.
+    The sample_table is constructed with harmonized structure matching the case
+    with valid strata. It contains two rows (query/reference) with:
+    - n_cells: number of cells per condition (same as n_cells_condition)
+    - n_cells_condition: total cells in the condition
+    - fraction: 1.0 (all cells used)
+    - coverage: 1.0 (all cells covered)
+    - collapsed: True (indicating these are not valid independent samples)
+
+    pb_counts is empty (0 rows) since no valid samples exist.
     """
     obs_grouped = obs.groupby(group_key_internal, observed=True, sort=False)
 
@@ -162,7 +169,22 @@ def _build_empty_pseudobulk_result(
     )
 
     # Create the sample table with two rows for the two conditions
-    sample_table = pd.DataFrame({group_key_internal: obs[group_key_internal].unique()})
+    # with harmonized metadata matching the case with valid strata
+    conditions = obs[group_key_internal].unique()
+    sample_table_rows = []
+    for condition in conditions:
+        n_cells_cond = n_cells.get(condition, 0)
+        sample_table_rows.append(
+            {
+                group_key_internal: condition,
+                "n_cells": n_cells_cond,
+                "n_cells_condition": n_cells_cond,
+                "fraction": 1.0,
+                "coverage": 1.0,
+                "collapsed": True,  # Mark as collapsed (not valid independent samples)
+            }
+        )
+    sample_table = pd.DataFrame(sample_table_rows)
 
     # Create the design matrix
     mm = model_matrix(design_formula, data=sample_table)
@@ -234,6 +256,9 @@ def _build_pseudobulk_result(
         on=merge_keys,
         how="left",
     )
+
+    # Add collapsed column - these are valid samples, so collapsed = False
+    sample_table["collapsed"] = False
 
     # Build design formula, excluding replicate_key and group_key_internal
     design_factors_categorical = [f for f in strata if f != replicate_key]

@@ -51,12 +51,26 @@ class PseudobulkResult:
         """Number of pseudobulk samples."""
         return len(self.pb_counts)
 
+    @property
+    def collapsed(self) -> bool:
+        """Whether samples are collapsed (all cells used without valid strata).
+
+        Returns True if no valid strata were found and all cells per condition
+        are used as a single sample. In this case, pb_counts is empty.
+        """
+        if "collapsed" not in self.sample_table.columns:
+            return False
+        return self.sample_table["collapsed"].all()
+
     def __repr__(self) -> str:
+        collapsed_info = ""
+        if self.collapsed:
+            collapsed_info = "\n  collapsed=True,"
         return (
             f"PseudobulkResult(\n"
             f"  n_samples={self.n_samples},\n"
             f"  n_genes={self.pb_counts.shape[1] if not self.pb_counts.empty else 0},\n"
-            f"  strata={list(self.strata)},\n"
+            f"  strata={list(self.strata)},{collapsed_info}\n"
             f"  design_formula='{self.design_formula}'\n"
             f")"
         )

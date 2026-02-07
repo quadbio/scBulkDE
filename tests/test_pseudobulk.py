@@ -120,6 +120,32 @@ def adata_confounded():
     return ad.AnnData(X=X, obs=obs, var=var)
 
 
+@pytest.fixture
+def adata_single_stratum_per_condition():
+    """AnnData where valid strata produce exactly one sample per condition.
+
+    This is distinct from the collapsed case - here we have valid strata
+    (e.g., single batch), but each condition only has one sample.
+    """
+    n_cells = 100
+    n_genes = 20
+
+    np.random.seed(999)
+    X = np.random.poisson(5, (n_cells, n_genes)).astype(np.float32)
+
+    obs = pd.DataFrame(
+        {
+            "cell_type": pd.Categorical(["TypeA"] * 50 + ["TypeB"] * 50),
+            "batch": pd.Categorical(["batch1"] * 100),  # Single batch
+        }
+    )
+    obs.index = [f"cell_{i}" for i in range(n_cells)]
+
+    var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
+
+    return ad.AnnData(X=X, obs=obs, var=var)
+
+
 # ==================== Tests for pseudobulk ====================
 
 
@@ -207,6 +233,11 @@ class TestPseudobulk:
         assert len(result.pb_counts) == 0
         assert list(result.pb_counts.columns) == list(simple_adata.var_names)
 
+        # Check collapsed column exists and is True for all rows
+        assert "collapsed" in result.sample_table.columns
+        assert result.sample_table["collapsed"].all()
+        assert result.collapsed
+
     def test_strata_creates_samples(self, simple_adata):
         """Test that valid strata create proper samples."""
         result = pseudobulk(
@@ -225,6 +256,35 @@ class TestPseudobulk:
 
         # Number of samples should match sample_table rows
         assert len(result.pb_counts) == len(result.sample_table)
+
+        # Check collapsed column exists and is False for all rows
+        assert "collapsed" in result.sample_table.columns
+        assert not result.sample_table["collapsed"].any()
+        assert not result.collapsed
+
+    def test_single_stratum_produces_valid_samples_not_collapsed(self, adata_single_stratum_per_condition):
+        """Test that single stratum per condition produces valid samples (not collapsed).
+
+        Critical distinction: valid strata that produce only one sample per condition
+        should have collapsed=False because these are proper independent samples.
+        """
+        result = pseudobulk(
+            adata_single_stratum_per_condition,
+            group_key="cell_type",
+            query="TypeA",
+            reference="TypeB",
+            replicate_key="batch",
+            min_cells=1,
+        )
+
+        assert len(result.strata) > 0
+        assert len(result.sample_table) == 2
+        assert len(result.pb_counts) == 2
+
+        # Critical: collapsed should be False
+        assert "collapsed" in result.sample_table.columns
+        assert not result.sample_table["collapsed"].any()
+        assert not result.collapsed
 
     def test_sample_table_has_condition_column(self, simple_adata):
         """Test that sample_table always has the condition column."""
@@ -1250,6 +1310,36 @@ class TestEdgeCases:
         # Should have 2 samples (query + reference in single batch)
         if result.strata:
             assert len(result.sample_table) == 2
+
+    def test_single_stratum_value_produces_valid_samples_not_collapsed(self, simple_adata):
+        """Test with single stratum value - these are valid samples, not collapsed.
+
+        This is a critical distinction: when valid strata produce only 1 sample
+        per condition, collapsed should still be False because the samples
+        were created from proper stratification.
+        """
+        # Make all cells same batch
+        simple_adata.obs["batch"] = "single_batch"
+        simple_adata.obs["batch"] = pd.Categorical(simple_adata.obs["batch"])
+
+        result = pseudobulk(
+            simple_adata,
+            group_key="cell_type",
+            query="TypeA",
+            reference="TypeB",
+            replicate_key="batch",
+            min_cells=1,
+        )
+
+        # Should have 2 samples (query + reference in single batch)
+        assert result.strata == ["batch"]
+        assert len(result.sample_table) == 2
+        assert len(result.pb_counts) == 2
+
+        # Critical: these are valid samples, NOT collapsed
+        assert "collapsed" in result.sample_table.columns
+        assert not result.sample_table["collapsed"].any()
+        assert not result.collapsed
 
     def test_many_strata_columns(self, simple_adata):
         """Test with many stratification columns."""
