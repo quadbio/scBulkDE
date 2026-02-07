@@ -12,6 +12,7 @@ from formulaic import model_matrix
 from scbulkde.engines import get_engine_instance
 from scbulkde.pp import pseudobulk
 from scbulkde.ut import DEResult, PseudobulkResult, logger
+from scbulkde.ut._performance import performance
 from scbulkde.ut.ut_basic import (
     _aggregate_results,
     _generate_pseudoreplicate,
@@ -108,13 +109,14 @@ def de(
 
     # Count existing samples per condition
     existing_samples = _count_existing_samples(pb_result.grouped)
-    # n_existing_total = existing_samples.get("query", 0) + existing_samples.get("reference", 0)
-    pb_counts_empty = pb_result.pb_counts.empty or len(pb_result.pb_counts) == 0
 
     # Compute how many samples are needed
     required_samples = {c: max(0, min_samples - existing_samples.get(c, 0)) for c in ["query", "reference"]}
-    needs_fallback = any(v > 0 for v in required_samples.values()) or pb_counts_empty
 
+    # Check if I need to fall back to pseudoreplicates or single-cell DE.
+    # This is the case when either condition has fewer than min_samples samples
+    needs_fallback = any(v > 0 for v in required_samples.values())
+    print(needs_fallback)
     # Case 1: Sufficient samples exist
     if not needs_fallback:
         logger.info(f"Running DE with {engine} engine (sufficient samples)...")
@@ -184,44 +186,39 @@ def de(
     raise ValueError(f"Unknown fallback_strategy: {fallback_strategy}")
 
 
+@performance(logger=logger)
 def _count_existing_samples(
     grouped: pd.api.typing.DataFrameGroupBy,
 ) -> dict[str, int]:
-    """Count existing samples per condition from grouped object."""
-    counts = {"query": 0, "reference": 0}
-    # grouper_names = grouped.grouper.names
+    idx = grouped.grouper.result_index
 
-    for meta, _ in grouped:
-        # meta can be a tuple or a single value depending on groupby columns
-        if isinstance(meta, tuple):
-            for m in meta:
-                if m == "query":
-                    counts["query"] += 1
-                elif m == "reference":
-                    counts["reference"] += 1
-        else:
-            # Single groupby column case
-            if meta == "query":
-                counts["query"] += 1
-            elif meta == "reference":
-                counts["reference"] += 1
+    # The multiindex stores the group keys as tuples, the .to_frame(index=False)
+    # converts to a DataFrame with one column per group key, without consuming a column as the index,
+    # .values.ravel() then flattens this to a 1D array of all group key values across all levels.
+    if isinstance(idx, pd.MultiIndex):
+        values = idx.to_frame(index=False).values.ravel()
+    else:
+        return {
+            "query": 0,
+            "reference": 0,
+        }
 
-    return counts
+    # Simply count how many query and reference groups there are
+    return pd.Series(values).value_counts().reindex(["query", "reference"], fill_value=0).to_dict()
 
 
+@performance(logger=logger)
 def _can_generate_pseudoreplicates(
     grouped: pd.api.typing.DataFrameGroupBy,
     condition: str,
 ) -> bool:
     """Check if there are any groups for a given condition to sample from."""
-    for meta, obs in grouped:
-        if isinstance(meta, tuple):
-            if condition in meta and len(obs) > 0:
-                return True
-        else:
-            if meta == condition and len(obs) > 0:
-                return True
-    return False
+    idx = grouped.grouper.result_index
+
+    if isinstance(idx, pd.MultiIndex):
+        return (idx.to_frame(index=False) == condition).any(axis=None)
+    else:
+        return condition in idx
 
 
 def _run_de_direct(
@@ -267,44 +264,44 @@ def _run_de_single_cell(
     engine_name: str,
     engine_kwargs: dict,
 ) -> DEResult:
-    """Run DE at single-cell level using all cells."""
+    """Run DE at single-cell level using all cells - optimized."""
     adata_sub = pb_result.adata_sub
     layer = pb_result.layer
     group_key_internal = pb_result.group_key_internal
 
-    # Get expression matrix
+    # Get expression matrix - keep as sparse if possible, or use numpy directly
     if layer is None:
         X = adata_sub.X
     else:
         X = adata_sub.layers[layer]
 
-    import time
-
-    start = time.time()
-    # Convert sparse to dense if needed (engines expect DataFrame)
+    # For engines that need dense arrays, convert efficiently
     if sp.issparse(X):
+        # Use tocsr() first if not already for faster row operations
+        if not sp.isspmatrix_csr(X):
+            X = X.tocsr()
         X = X.toarray()
 
-    # Create counts DataFrame: cells x genes
-    counts = pd.DataFrame(X, index=adata_sub.obs_names, columns=adata_sub.var_names)
+    # Don't create DataFrame for counts - pass numpy array directly
+    # Modify engines to accept numpy arrays with gene_names passed separately
+    gene_names = adata_sub.var_names
 
-    # Create metadata with condition column
-    metadata = pd.DataFrame(
-        {group_key_internal: pb_result.grouped.obj[group_key_internal].values}, index=adata_sub.obs_names
-    )
-    end = time.time()
-    print(f"Data preparation time: {end - start:.2f} seconds")
+    # Create minimal metadata DataFrame
+    condition_values = pb_result.grouped.obj[group_key_internal].values
+    metadata = pd.DataFrame({group_key_internal: condition_values}, index=adata_sub.obs_names)
 
-    # Simple design: intercept + condition
+    # Simple design
     design_formula = f"C({group_key_internal}, contr.treatment(base='reference'))"
     design_matrix = model_matrix(design_formula, data=metadata)
 
-    n_query = (metadata[group_key_internal] == "query").sum()
-    n_ref = (metadata[group_key_internal] == "reference").sum()
-    logger.info(f"Single-cell DE: {n_query} query cells, {n_ref} reference cells, {counts.shape[1]} genes")
+    n_query = (condition_values == "query").sum()
+    n_ref = (condition_values == "reference").sum()
+    logger.info(f"Single-cell DE: {n_query} query cells, {n_ref} reference cells, {X.shape[1]} genes")
 
-    # Run DE
-    start = time.time()
+    # Create counts DataFrame only when passing to engine
+    # (or better: modify engine to accept arrays)
+    counts = pd.DataFrame(X, index=adata_sub.obs_names, columns=gene_names)
+
     results = de_engine.run(
         counts=counts,
         metadata=metadata,
@@ -314,8 +311,6 @@ def _run_de_single_cell(
         correction_method=correction_method,
         **engine_kwargs,
     )
-    end = time.time()
-    print(f"DE engine time: {end - start:.2f} seconds")
 
     n_sig = (results["padj"] < alpha).sum()
     logger.info(f"Single-cell DE complete: {len(results)} genes tested, {n_sig} significant (padj < {alpha})")
