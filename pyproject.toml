@@ -24,10 +24,13 @@ classifiers = [
 ]
 dependencies = [
   "anndata",
+  "formulaic",
   "pydeseq2",
+  "rich",
   # for debug logging (referenced from the issue template)
   "session-info2",
   "statsmodels",
+  "tqdm",
 ]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://scBulkDE.readthedocs.io/"
@@ -41,7 +44,6 @@ dev = [
 ]
 test = [
   "coverage>=7.10",
-  "formulaic",
   "pytest",
   "pytest-cov",     # For VS Code’s coverage functionality
   "tqdm",
@@ -50,6 +52,7 @@ doc = [
   "ipykernel",
   "ipython",
   "myst-nb>=1.1",
+  "myst-parser==4.0.1",
   "pandas",
   "sphinx>=8.1",
   "sphinx-autodoc-typehints",

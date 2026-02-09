@@ -51,12 +51,12 @@ def de(
     # DE parameters
     min_samples: int = 3,
     alpha: float = 0.05,
-    alpha_fallback: float | None = None,
+    alpha_fallback: float | None = 0.05,
     correction_method: str = "fdr_bh",
     engine: str = "anova",
     engine_kwargs: dict | None = None,
     # fallback parameters
-    fallback_strategy: Literal["pseudoreplicates", "single_cell"] | None = None,
+    fallback_strategy: Literal["pseudoreplicates", "single_cell"] | None = "pseudoreplicates",
     # general parameters
     seed: int = 42,
 ) -> DEResult:
@@ -119,6 +119,7 @@ def de(
 
     # Case 1: Sufficient samples exist
     if not needs_fallback:
+        print("DEBUG: USING DIRECT DE")
         logger.info(f"Running DE with {engine} engine (sufficient samples)...")
         return _run_de_direct(
             pb_result=pb_result,
@@ -142,6 +143,7 @@ def de(
 
     # Case 2a: Single-cell fallback
     if fallback_strategy == "single_cell":
+        print("DEBUG: USING SINGLE-CELL DE FALLBACK")
         logger.info(f"Running single-cell DE with {engine} engine...")
         return _run_de_single_cell(
             pb_result=pb_result,
@@ -154,14 +156,14 @@ def de(
 
     # Case 2b: Pseudoreplicates fallback
     if fallback_strategy == "pseudoreplicates":
-        # Check if we can generate pseudoreplicates (need at least 1 sample per condition to resample from)
-        can_generate_query = _can_generate_pseudoreplicates(pb_result.grouped, "query")
-        can_generate_ref = _can_generate_pseudoreplicates(pb_result.grouped, "reference")
+        print("DEBUG: USING PSEUDOREPLICATES DE FALLBACK")
+        # Check if we can generate pseudoreplicates - need cells for each condition
+        can_generate_query, can_generate_ref = _can_generate_pseudoreplicates(pb_result)
 
         if not can_generate_query or not can_generate_ref:
             raise ValueError(
-                f"Cannot generate pseudoreplicates: need at least some cells per condition. "
-                f"Query groups available: {can_generate_query}, Reference groups available: {can_generate_ref}. "
+                f"Cannot generate pseudoreplicates: need cells for each condition. "
+                f"Query cells available: {can_generate_query}, Reference cells available: {can_generate_ref}. "
                 f"Consider using fallback_strategy='single_cell' instead."
             )
 
@@ -190,6 +192,12 @@ def de(
 def _count_existing_samples(
     grouped: pd.api.typing.DataFrameGroupBy,
 ) -> dict[str, int]:
+    """Count existing pseudobulk samples per condition.
+
+    For a valid MultiIndex groupby (with strata), counts unique strata combinations
+    for each condition. For a single-column groupby (collapsed case), returns 0 for
+    both conditions since there are no independent samples.
+    """
     idx = grouped.grouper.result_index
 
     # The multiindex stores the group keys as tuples, the .to_frame(index=False)
@@ -211,16 +219,39 @@ def _count_existing_samples(
 
 @performance(logger=logger)
 def _can_generate_pseudoreplicates(
-    grouped: pd.api.typing.DataFrameGroupBy,
-    condition: str,
-) -> bool:
-    """Check if there are any groups for a given condition to sample from."""
-    idx = grouped.grouper.result_index
+    pb_result: PseudobulkResult,
+) -> tuple[bool, bool]:
+    """Check if pseudoreplicates can be generated for each condition.
 
-    if isinstance(idx, pd.MultiIndex):
-        return (idx.to_frame(index=False) == condition).any(axis=None)
-    else:
-        return condition in idx
+    Pseudoreplicates can be generated if there are cells for each condition in the
+    subset AnnData. This is checked by looking at the grouped object's underlying
+    DataFrame, which contains all cells that passed filtering.
+
+    Parameters
+    ----------
+    pb_result
+        The pseudobulk result containing the grouped data and subset AnnData.
+
+    Returns
+    -------
+    tuple[bool, bool]
+        (can_generate_query, can_generate_reference) - True if cells exist for that condition.
+
+    Notes
+    -----
+    This function replaces the previous approach of checking the MultiIndex.
+    The key insight is that if cells exist in the adata_sub for a condition,
+    we can always generate pseudoreplicates by sampling from those cells,
+    regardless of whether valid strata exist.
+    """
+    group_key_internal = pb_result.group_key_internal
+    obs = pb_result.grouped.obj  # The underlying DataFrame used for grouping
+
+    condition_values = obs[group_key_internal]
+    has_query = (condition_values == "query").any()
+    has_reference = (condition_values == "reference").any()
+
+    return has_query, has_reference
 
 
 def _run_de_direct(
@@ -266,12 +297,16 @@ def _run_de_single_cell(
     engine_name: str,
     engine_kwargs: dict,
 ) -> DEResult:
-    """Run DE at single-cell level using all cells - optimized."""
+    """Run DE at single-cell level using all cells - optimized for large datasets.
+
+    This function avoids creating large DataFrames by passing numpy arrays
+    directly to the engine.
+    """
     adata_sub = pb_result.adata_sub
     layer = pb_result.layer
     group_key_internal = pb_result.group_key_internal
 
-    # Get expression matrix - keep as sparse if possible, or use numpy directly
+    # Get expression matrix - keep as numpy array
     if layer is None:
         X = adata_sub.X
     else:
@@ -283,10 +318,12 @@ def _run_de_single_cell(
         if not sp.isspmatrix_csr(X):
             X = X.tocsr()
         X = X.toarray()
+    else:
+        # Ensure we have a numpy array (not a matrix or other type)
+        X = np.asarray(X)
 
-    # Don't create DataFrame for counts - pass numpy array directly
-    # Modify engines to accept numpy arrays with gene_names passed separately
-    gene_names = adata_sub.var_names
+    # Get gene names as numpy array
+    gene_names = adata_sub.var_names.to_numpy()
 
     # Create minimal metadata DataFrame
     condition_values = pb_result.grouped.obj[group_key_internal].values
@@ -300,17 +337,15 @@ def _run_de_single_cell(
     n_ref = (condition_values == "reference").sum()
     logger.info(f"Single-cell DE: {n_query} query cells, {n_ref} reference cells, {X.shape[1]} genes")
 
-    # Create counts DataFrame only when passing to engine
-    # (or better: modify engine to accept arrays)
-    counts = pd.DataFrame(X, index=adata_sub.obs_names, columns=gene_names)
-
+    # Pass numpy array directly to engine - no DataFrame construction
     results = de_engine.run(
-        counts=counts,
+        counts=X,
         metadata=metadata,
         design_matrix=design_matrix,
         design_formula=design_formula,
         alpha=alpha,
         correction_method=correction_method,
+        gene_names=gene_names,
         **engine_kwargs,
     )
 
