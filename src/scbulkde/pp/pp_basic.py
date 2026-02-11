@@ -42,7 +42,148 @@ def pseudobulk(
     covariate_strategy: Literal["sequence_order", "most_levels"] = "sequence_order",
     resolve_conflicts: bool = True,
 ):
-    """Main function to perform pseudobulking on an AnnData object."""
+    """
+    Perform pseudobulking on single-cell data to aggregate expression across cells.
+
+    This function aggregates single-cell expression data into pseudobulk samples by
+    combining cells from specified groups (query vs. reference) across biological
+    replicates, if present, and optional covariates. It creates a design matrix
+    suitable for  downstream differential expression analysis while filtering
+    samples based on quality control metrics.
+
+    Parameters
+    ----------
+    adata : ad.AnnData
+        Annotated data matrix containing single-cell expression data.
+    group_key : str
+        Column name in `adata.obs` that defines the cell groups for comparison
+        (e.g., 'cell_type', 'condition', 'cluster').
+    query : str or Sequence[str]
+        Cell group(s) to be used as the query/test condition. Must be present
+        in `adata.obs[group_key]`.
+    reference : str or Sequence[str], default="rest"
+        Cell group(s) to be used as the reference/control condition. If "rest",
+        all groups not in `query` are used as reference. Must be present in
+        `adata.obs[group_key]`.
+    replicate_key : str, optional
+        Column name in `adata.obs` defining biological replicates (e.g., 'sample_id',
+        'donor', 'batch'). Required for creating multiple pseudobulk samples per
+        condition, but never included in the design. If None, cells are not stratified
+        by replicate.
+    min_cells : int, optional, default=50
+        Minimum number of cells required per pseudobulk sample. Samples with fewer
+        cells are excluded from analysis.
+    min_fraction : float, optional, default=0.2
+        Minimum fraction of cells of the condition in that pseudobulk sample for it
+        to be considered valid. Samples with a lower fraction are excluded from analysis.
+    min_coverage : float, optional, default=0.75
+        Minimum coverage provided by all valid samples per condition. Conditions with
+        lower coverage are collapsed. Range: [0.0, 1.0].
+    categorical_covariates : Sequence[str], optional
+        Column names in `adata.obs` representing categorical covariates to include
+        in the design (e.g., ['experiment', 'chemistry', 'batch']). These are added as
+        stratification factors along with `replicate_key`.
+    continuous_covariates : Sequence[str], optional
+        Column names in `adata.obs` representing continuous covariates to include
+        in the design (e.g., ['cellcycle', 'pct_mito']). These are aggregated
+        per pseudobulk sample.
+    continuous_aggregation : {"mean", "sum", "median"} or callable, default="mean"
+        Method to aggregate continuous covariates across cells within each
+        pseudobulk sample. Can be a string specifying a standard aggregation
+        or a custom callable.
+    layer : str, optional
+        Layer in `adata.layers` to use for aggregation. If None, uses `adata.X`.
+    layer_aggregation : {"sum", "mean"}, default="sum"
+        Method to aggregate expression values across cells.
+    qualify_strategy : {"and", "or"}, default="or"
+        Strategy for sample qualification when multiple criteria are specified:
+        - "and": Sample candidate must pass both `min_cells` AND `min_fraction` thresholds
+        - "or": Samples candidate must pass either `min_cells` OR `min_fraction` threshold
+    covariate_strategy : {"sequence_order", "most_levels"}, default="sequence_order"
+        Strategy for ordering covariates in the design formula when conflicts arise:
+        - "sequence_order": Drop covariates from back to front in the provided list
+        - "most_levels": Prioritize covariates with more unique levels
+    resolve_conflicts : bool, default=True
+        If True, automatically resolve confounded covariates by iteratively
+        removing them to ensure a full-rank design matrix. If False, raise
+        an error when confounding is detected.
+
+    Returns
+    -------
+    PseudobulkResult
+        Container object with the following attributes:
+
+        - **adata_sub** : ad.AnnData
+            Subset of input AnnData containing only query and reference cells
+        - **pb_counts** : pd.DataFrame
+            Aggregated pseudobulk expression matrix (samples × genes). Empty if
+            no valid strata exist (collapsed case)
+        - **grouped** : pd.api.typing.DataFrameGroupBy
+            Grouped observation data for internal use
+        - **sample_table** : pd.DataFrame
+            Metadata for each pseudobulk sample, including covariates, cell counts,
+            and quality metrics
+        - **design_matrix** : pd.DataFrame
+            Design matrix for statistical testing, created from `design_formula`
+        - **design_formula** : str
+            Patsy-style formula describing the statistical model
+        - **group_key** : str
+            Original group key parameter
+        - **group_key_internal** : str
+            Internal column name for query/reference labels ('psbulk_condition')
+        - **query** : str or list
+            Query group(s) used
+        - **reference** : str or list
+            Reference group(s) used
+        - **strata** : list of str
+            Final stratification factors used (may be subset of requested due to
+            conflict resolution). Empty list indicates collapsed pseudobulk
+        - **collapsed** : bool
+            True if insufficient replicates exist and data was collapsed across
+            all cells per condition
+        - **n_samples** : int
+            Number of pseudobulk samples created
+
+    Warnings
+    --------
+    - If `min_cells`, `min_fraction`, or `min_coverage` thresholds are not met,
+      samples or entire conditions may be excluded or collapsed
+    - Confounded covariates are automatically removed when `resolve_conflicts=True`
+    - Empty `pb_counts` (collapsed case) indicates no valid independent samples
+      exist and differential expression testing may require special handling
+
+    See Also
+    --------
+    tl.de : Perform differential expression testing on pseudobulk data
+    PseudobulkResult : Container class for pseudobulk results
+
+    Examples
+    --------
+    n.a.
+
+    Notes
+    -----
+    The pseudobulking approach aggregates cells from the same biological replicate
+    and condition, reducing the computational burden and addressing the issue of
+    pseudoreplication in single-cell data. This enables the use of standard bulk
+    RNA-seq differential expression methods while accounting for biological variability.
+
+    When `collapsed=True`, the result contains only aggregated condition-level
+    information without independent replicates. In that case one needs to use the
+    `tl.de` function with fallback strategies (`'pseudoreplicates'` or `'single_cell'`).
+
+    The function automatically:
+
+    - Filters cells to only query and reference groups
+    - Validates stratification factors (replicates and covariates)
+    - Removes samples not meeting quality thresholds
+    - Resolves confounded covariates to ensure full-rank design
+    - Creates both count matrix and metadata for downstream analysis
+
+    References
+    ----------
+    .. [1] Squair, J.W., et al. "Confronting false discoveries in single-cell differential expression." Nature Communications 12, 5692 (2021).
+    """
     group_key_internal = "psbulk_condition"
 
     # Label cells as 'query' or 'reference'

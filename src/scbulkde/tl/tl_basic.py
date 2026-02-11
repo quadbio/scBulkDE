@@ -60,19 +60,168 @@ def de(
     # general parameters
     seed: int = 42,
 ) -> DEResult:
-    """Perform pseudobulked differential expression analysis.
+    """
+    Perform differential expression analysis on pseudobulked single-cell data.
+
+    This function integrates pseudobulking and differential expression testing
+    with fallback strategies when insufficient biological replicates exist.
 
     Parameters
     ----------
-    data
-        AnnData object or PseudobulkResult.
-    fallback_strategy
-        Strategy when insufficient samples exist:
-        - 'pseudoreplicates': Generate pseudoreplicates to fill up to min_samples
-        - 'single_cell': Perform DE at single-cell level using all cells
-        - None: Raise error if insufficient samples (default)
-    alpha_fallback
-        Separate significance threshold for fallback methods. If None, uses alpha.
+    data : ad.AnnData or PseudobulkResult
+        Input data. Either an AnnData object (will be pseudobulked automatically)
+        or a pre-computed PseudobulkResult from `pp.pseudobulk()`.
+    group_key : str
+        Column name in `adata.obs` that defines the cell groups for comparison
+        (e.g., 'cell_type', 'condition', 'cluster').
+    query : str or Sequence[str]
+        Cell group(s) to be used as the query/test condition. Must be present
+        in `adata.obs[group_key]`.
+    reference : str or Sequence[str], default="rest"
+        Cell group(s) to be used as the reference/control condition. If "rest",
+        all groups not in `query` are used as reference. Must be present in
+        `adata.obs[group_key]`.
+    replicate_key : str, optional
+        Column name in `adata.obs` defining biological replicates (e.g., 'sample_id',
+        'donor', 'batch'). Required for creating multiple pseudobulk samples per
+        condition, but never included in the design. If None, cells are not stratified
+        by replicate.
+    min_cells : int, optional, default=50
+        Minimum number of cells required per pseudobulk sample. Samples with fewer
+        cells are excluded from analysis.
+    min_fraction : float, optional, default=0.2
+        Minimum fraction of cells of the condition in that pseudobulk sample for it
+        to be considered valid. Samples with a lower fraction are excluded from analysis.
+    min_coverage : float, optional, default=0.75
+        Minimum coverage provided by all valid samples per condition. Conditions with
+        lower coverage are collapsed. Range: [0.0, 1.0].
+    categorical_covariates : Sequence[str], optional
+        Column names in `adata.obs` representing categorical covariates to include
+        in the design (e.g., ['experiment', 'chemistry', 'batch']). These are added as
+        stratification factors along with `replicate_key`.
+    continuous_covariates : Sequence[str], optional
+        Column names in `adata.obs` representing continuous covariates to include
+        in the design (e.g., ['cellcycle', 'pct_mito']). These are aggregated
+        per pseudobulk sample.
+    continuous_aggregation : {"mean", "sum", "median"} or callable, default="mean"
+        Method to aggregate continuous covariates across cells within each
+        pseudobulk sample. Can be a string specifying a standard aggregation
+        or a custom callable.
+    layer : str, optional
+        Layer in `adata.layers` to use for aggregation. If None, uses `adata.X`.
+    layer_aggregation : {"sum", "mean"}, default="sum"
+        Method to aggregate expression values across cells.
+    qualify_strategy : {"and", "or"}, default="or"
+        Strategy for sample qualification when multiple criteria are specified:
+        - "and": Sample candidate must pass both `min_cells` AND `min_fraction` thresholds
+        - "or": Samples candidate must pass either `min_cells` OR `min_fraction` threshold
+    covariate_strategy : {"sequence_order", "most_levels"}, default="sequence_order"
+        Strategy for ordering covariates in the design formula when conflicts arise:
+        - "sequence_order": Drop covariates from back to front in the provided list
+        - "most_levels": Prioritize covariates with more unique levels
+    resolve_conflicts : bool, default=True
+        If True, automatically resolve confounded covariates by iteratively
+        removing them to ensure a full-rank design matrix. If False, raise
+        an error when confounding is detected.
+    n_repetitions : int, default=3
+        Number of pseudoreplicate iterations to generate.
+    resampling_fraction : float, default=0.6
+        Fraction of cells to sample (with replacement) from a valid pseudobulk
+        to generate a pseudoreplicate.
+    min_list_overlap : float, default=1.0
+        Minimum fraction of repetitions in which a gene must be significant to
+        be included in final results. A value of 1.0 requires
+        significance in all repetitions.
+    min_samples : int, default=3
+        Minimum number of pseudobulk samples required per condition for direct
+        DE testing. If fewer exist, falls back according to `fallback_strategy`.
+    alpha : float, default=0.05
+        Significance threshold for direct pseudobulk DE testing.
+    alpha_fallback : float, optional, default=0.05
+        Separate significance threshold for fallback methods (pseudoreplicates
+        or single-cell). If None, uses `alpha`.
+    correction_method : str, default="fdr_bh"
+        Multiple testing correction method. Options include:
+        - 'fdr_bh': Benjamini-Hochberg FDR (recommended)
+        - 'bonferroni': Bonferroni correction
+        - Others supported by `statsmodels.stats.multitest.multipletests`
+    engine : str, default="anova"
+        Statistical engine for DE testing. Available engines are 'pydeseq2' and 'anova'
+    engine_kwargs : dict, optional
+        Additional keyword arguments passed to the DE engine.
+    fallback_strategy : {"pseudoreplicates", "single_cell", None}, default="pseudoreplicates"
+        Strategy when fewer than `min_samples` exist per condition:
+        - 'pseudoreplicates': Generate synthetic replicates by resampling cells
+          and run multiple DE tests, aggregating results
+        - 'single_cell': Perform DE at single-cell resolution using all cells
+        - None: Raise an error if insufficient samples
+    seed : int, default=42
+        Random seed for reproducibility of pseudoreplicate generation.
+
+    Returns
+    -------
+    DEResult
+        Container object with differential expression results and metadata:
+
+        - **results** : pd.DataFrame
+            Main results table with columns:
+
+            * gene: Gene identifier
+            * baseMean: Mean expression across samples
+            * log2FoldChange: Log2 fold change (query vs reference)
+            * lfcSE: Standard error of log2 fold change
+            * stat: Test statistic
+            * stat_sign: Signed statistic for ranking
+            * pvalue: Raw p-value
+            * padj: Adjusted p-value (FDR)
+
+        - **query** : str or list
+            Query condition(s) tested
+        - **reference** : str or list
+            Reference condition(s) tested
+        - **design** : str
+            Design formula used for testing
+        - **engine** : str
+            Statistical engine used
+        - **used_pseudoreplicates** : bool
+            True if pseudoreplicates were generated
+        - **used_single_cell** : bool
+            True if single-cell level testing was performed
+        - **n_repetitions** : int
+            Number of repetitions (1 for direct testing, >1 for pseudoreplicates)
+        - **repetition_results** : dict, optional
+            Individual results from each repetition (only for pseudoreplicates)
+
+    Raises
+    ------
+    ValueError
+        - If `fallback_strategy=None` and insufficient samples exist
+        - If `data` is AnnData but `group_key` or `query` is not provided
+        - If specified groups/keys don't exist in the data
+
+    Warnings
+    --------
+    - Single-cell fallback testing treats each cell as an independent sample,
+      which inflates test statistics
+    - Pseudoreplicate fallback is more conservative but if a large fraction of
+      cells are sampled, the independence assumption may still be violated.
+    - Results from fallback strategies should be interpreted with caution and
+      ideally validated with independent biological replicates
+
+    See Also
+    --------
+    pp.pseudobulk : Perform pseudobulking without DE testing
+    rank_genes_groups : Perform multi-group DE analysis
+    DEResult : Container class for DE results
+
+    Examples
+    --------
+    n.a.
+
+    References
+    ----------
+    .. [1] Squair, J.W., et al. "Confronting false discoveries in single-cell differential expression." Nature Communications 12, 5692 (2021).
+    .. [2] Love, M.I., Huber, W. & Anders, S. "Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2." Genome Biology 15, 550 (2014).
     """
     if engine_kwargs is None:
         engine_kwargs = {}
