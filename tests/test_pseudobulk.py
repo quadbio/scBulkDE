@@ -7,11 +7,9 @@ current implementation. Tests may fail if there are bugs in the implementation.
 from __future__ import annotations
 
 # Assume these imports work in the test environment
-import anndata as ad
 import numpy as np
 import pandas as pd
 import pytest
-import scipy.sparse as sp
 
 from scbulkde.pp.pp_basic import (
     _build_empty_pseudobulk_result,
@@ -20,142 +18,14 @@ from scbulkde.pp.pp_basic import (
 )
 from scbulkde.ut._containers import PseudobulkResult
 
-# ==================== Fixtures ====================
-
-
-@pytest.fixture
-def simple_adata():
-    """Create a simple AnnData with clear query/reference groups."""
-    n_cells = 100
-    n_genes = 50
-
-    np.random.seed(42)
-    X = np.random.poisson(5, (n_cells, n_genes)).astype(np.float32)
-
-    obs = pd.DataFrame(
-        {
-            "cell_type": pd.Categorical(["TypeA"] * 40 + ["TypeB"] * 30 + ["TypeC"] * 30),
-            "batch": pd.Categorical(["batch1"] * 50 + ["batch2"] * 50),
-            "donor": pd.Categorical(["donor1"] * 25 + ["donor2"] * 25 + ["donor3"] * 25 + ["donor4"] * 25),
-            "age": np.random.uniform(20, 80, n_cells),
-        }
-    )
-    obs.index = [f"cell_{i}" for i in range(n_cells)]
-
-    var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
-
-    return ad.AnnData(X=X, obs=obs, var=var)
-
-
-@pytest.fixture
-def adata_with_small_groups():
-    """AnnData where some groups have too few cells to qualify."""
-    n_cells = 200
-    n_genes = 20
-
-    np.random.seed(123)
-    X = np.random.poisson(3, (n_cells, n_genes)).astype(np.float32)
-
-    # Create uneven group sizes
-    obs = pd.DataFrame(
-        {
-            "cell_type": pd.Categorical(["TypeA"] * 100 + ["TypeB"] * 100),
-            "batch": pd.Categorical(
-                # batch1: 90 cells, batch2: 10 cells in first half
-                # batch1: 10 cells, batch2: 90 cells in second half
-                ["batch1"] * 90 + ["batch2"] * 10 + ["batch1"] * 10 + ["batch2"] * 90
-            ),
-        }
-    )
-    obs.index = [f"cell_{i}" for i in range(n_cells)]
-
-    var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
-
-    return ad.AnnData(X=X, obs=obs, var=var)
-
-
-@pytest.fixture
-def adata_sparse():
-    """AnnData with sparse matrix."""
-    n_cells = 80
-    n_genes = 30
-
-    np.random.seed(456)
-    X = sp.random(n_cells, n_genes, density=0.3, format="csr")
-
-    obs = pd.DataFrame(
-        {
-            "cell_type": pd.Categorical(["TypeA"] * 40 + ["TypeB"] * 40),
-            "batch": pd.Categorical(["batch1"] * 20 + ["batch2"] * 20 + ["batch1"] * 20 + ["batch2"] * 20),
-        }
-    )
-    obs.index = [f"cell_{i}" for i in range(n_cells)]
-
-    var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
-
-    return ad.AnnData(X=X, obs=obs, var=var)
-
-
-@pytest.fixture
-def adata_confounded():
-    """AnnData where covariates are confounded with condition."""
-    n_cells = 100
-    n_genes = 20
-
-    np.random.seed(789)
-    X = np.random.poisson(4, (n_cells, n_genes)).astype(np.float32)
-
-    # TypeA only in batch1, TypeB only in batch2 (perfect confounding)
-    obs = pd.DataFrame(
-        {
-            "cell_type": pd.Categorical(["TypeA"] * 50 + ["TypeB"] * 50),
-            "batch": pd.Categorical(["batch1"] * 50 + ["batch2"] * 50),
-            "donor": pd.Categorical(["donor1"] * 25 + ["donor2"] * 25 + ["donor3"] * 25 + ["donor4"] * 25),
-        }
-    )
-    obs.index = [f"cell_{i}" for i in range(n_cells)]
-
-    var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
-
-    return ad.AnnData(X=X, obs=obs, var=var)
-
-
-@pytest.fixture
-def adata_single_stratum_per_condition():
-    """AnnData where valid strata produce exactly one sample per condition.
-
-    This is distinct from the collapsed case - here we have valid strata
-    (e.g., single batch), but each condition only has one sample.
-    """
-    n_cells = 100
-    n_genes = 20
-
-    np.random.seed(999)
-    X = np.random.poisson(5, (n_cells, n_genes)).astype(np.float32)
-
-    obs = pd.DataFrame(
-        {
-            "cell_type": pd.Categorical(["TypeA"] * 50 + ["TypeB"] * 50),
-            "batch": pd.Categorical(["batch1"] * 100),  # Single batch
-        }
-    )
-    obs.index = [f"cell_{i}" for i in range(n_cells)]
-
-    var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
-
-    return ad.AnnData(X=X, obs=obs, var=var)
-
-
-# ==================== Tests for pseudobulk ====================
-
 
 class TestPseudobulk:
     """Tests for the main pseudobulk function."""
 
-    def test_basic_functionality(self, simple_adata):
+    def test_basic_functionality(self, adata_balanced):
         """Test that pseudobulk returns a PseudobulkResult with expected structure."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -169,10 +39,10 @@ class TestPseudobulk:
         assert result.group_key_internal == "psbulk_condition"
         assert result.query == ["TypeA"] or result.query == "TypeA"
 
-    def test_query_reference_cell_selection(self, simple_adata):
+    def test_query_reference_cell_selection(self, adata_balanced):
         """Test that only query and reference cells are retained."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -185,10 +55,10 @@ class TestPseudobulk:
         assert set(cell_types_in_result) == {"TypeA", "TypeB"}
         assert "TypeC" not in cell_types_in_result
 
-    def test_reference_rest(self, simple_adata):
+    def test_reference_rest(self, adata_balanced):
         """Test reference='rest' includes all non-query groups."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="rest",
@@ -201,10 +71,10 @@ class TestPseudobulk:
         assert "TypeA" in cell_types_in_result
         assert "TypeB" in cell_types_in_result or "TypeC" in cell_types_in_result
 
-    def test_multiple_query_groups(self, simple_adata):
+    def test_multiple_query_groups(self, adata_balanced):
         """Test with multiple query groups."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query=["TypeA", "TypeB"],
             reference="TypeC",
@@ -216,10 +86,10 @@ class TestPseudobulk:
         cell_types_in_result = set(result.adata_sub.obs["cell_type"].unique())
         assert {"TypeA", "TypeB", "TypeC"}.issubset(cell_types_in_result)
 
-    def test_no_strata_returns_empty_counts(self, simple_adata):
+    def test_no_strata_returns_empty_counts(self, adata_balanced):
         """Test that without strata, pb_counts is empty."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -231,17 +101,17 @@ class TestPseudobulk:
         # Should return empty pseudobulk result
         assert result.strata == []
         assert len(result.pb_counts) == 0
-        assert list(result.pb_counts.columns) == list(simple_adata.var_names)
+        assert list(result.pb_counts.columns) == list(adata_balanced.var_names)
 
         # Check collapsed column exists and is True for all rows
         assert "collapsed" in result.sample_table.columns
         assert result.sample_table["collapsed"].all()
         assert result.collapsed
 
-    def test_strata_creates_samples(self, simple_adata):
+    def test_strata_creates_samples(self, adata_balanced):
         """Test that valid strata create proper samples."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -262,14 +132,14 @@ class TestPseudobulk:
         assert not result.sample_table["collapsed"].any()
         assert not result.collapsed
 
-    def test_single_stratum_produces_valid_samples_not_collapsed(self, adata_single_stratum_per_condition):
+    def test_single_stratum_produces_valid_samples_not_collapsed(self, adata_single_stratum):
         """Test that single stratum per condition produces valid samples (not collapsed).
 
         Critical distinction: valid strata that produce only one sample per condition
         should have collapsed=False because these are proper independent samples.
         """
         result = pseudobulk(
-            adata_single_stratum_per_condition,
+            adata_single_stratum,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -286,10 +156,10 @@ class TestPseudobulk:
         assert not result.sample_table["collapsed"].any()
         assert not result.collapsed
 
-    def test_sample_table_has_condition_column(self, simple_adata):
+    def test_sample_table_has_condition_column(self, adata_balanced):
         """Test that sample_table always has the condition column."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -299,10 +169,10 @@ class TestPseudobulk:
 
         assert "psbulk_condition" in result.sample_table.columns
 
-    def test_sample_table_has_statistics_columns(self, simple_adata):
+    def test_sample_table_has_statistics_columns(self, adata_balanced):
         """Test that sample_table contains the new statistics columns."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -316,10 +186,10 @@ class TestPseudobulk:
             assert "fraction" in result.sample_table.columns
             assert "coverage" in result.sample_table.columns
 
-    def test_sample_table_rows_match_groups(self, simple_adata):
+    def test_sample_table_rows_match_groups(self, adata_balanced):
         """Test that sample_table has one row per unique sample group."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -333,10 +203,10 @@ class TestPseudobulk:
             expected_groups = result.grouped.ngroups
             assert len(result.sample_table) == expected_groups
 
-    def test_design_formula_excludes_replicate_key(self, simple_adata):
+    def test_design_formula_excludes_replicate_key(self, adata_balanced):
         """Test that replicate_key is not in the design formula."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -349,10 +219,10 @@ class TestPseudobulk:
         assert "batch" in result.strata
         assert "batch" not in result.design_formula
 
-    def test_design_formula_includes_categorical_covariates(self, simple_adata):
+    def test_design_formula_includes_categorical_covariates(self, adata_balanced):
         """Test that categorical covariates appear in design formula."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -367,10 +237,10 @@ class TestPseudobulk:
             # This might fail if donor is dropped due to rank deficiency
             pass  # Checked by other tests
 
-    def test_continuous_covariates_aggregated(self, simple_adata):
+    def test_continuous_covariates_aggregated(self, adata_balanced):
         """Test that continuous covariates are aggregated in sample table."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -385,11 +255,11 @@ class TestPseudobulk:
             # Age should be aggregated (mean of cells in each sample)
             assert result.sample_table["age"].dtype in [np.float64, np.float32, float]
 
-    def test_qualifying_cells_filtered(self, adata_with_small_groups):
+    def test_qualifying_cells_filtered(self, adata_unbalanced):
         """Test that only cells in qualifying groups are used."""
         # With min_cells=20, small groups should be excluded
         result = pseudobulk(
-            adata_with_small_groups,
+            adata_unbalanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -405,21 +275,21 @@ class TestPseudobulk:
             # Some cells should be filtered out
             assert len(result.adata_sub) <= original_cells
 
-    def test_raises_on_no_query_cells(self, simple_adata):
+    def test_raises_on_no_query_cells(self, adata_balanced):
         """Test that ValueError is raised if no query cells exist."""
         with pytest.raises(ValueError, match="No cells found for query"):
             pseudobulk(
-                simple_adata,
+                adata_balanced,
                 group_key="cell_type",
                 query="NonexistentType",
                 reference="TypeB",
             )
 
-    def test_raises_on_no_reference_cells(self, simple_adata):
+    def test_raises_on_no_reference_cells(self, adata_balanced):
         """Test that ValueError is raised if no reference cells exist."""
         with pytest.raises(ValueError, match="No cells found for reference"):
             pseudobulk(
-                simple_adata,
+                adata_balanced,
                 group_key="cell_type",
                 query="TypeA",
                 reference="NonexistentType",
@@ -440,13 +310,13 @@ class TestPseudobulk:
         if len(result.pb_counts) > 0:
             assert not result.pb_counts.isna().all().all()
 
-    def test_layer_usage(self, simple_adata):
+    def test_layer_usage(self, adata_balanced):
         """Test that specified layer is used for aggregation."""
         # Add a layer with different values
-        simple_adata.layers["normalized"] = simple_adata.X * 2
+        adata_balanced.layers["normalized"] = adata_balanced.X * 2
 
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -457,10 +327,10 @@ class TestPseudobulk:
 
         assert result.layer == "normalized"
 
-    def test_layer_aggregation_sum(self, simple_adata):
+    def test_layer_aggregation_sum(self, adata_balanced):
         """Test sum aggregation of counts."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -471,10 +341,10 @@ class TestPseudobulk:
 
         assert result.layer_aggregation == "sum"
 
-    def test_layer_aggregation_mean(self, simple_adata):
+    def test_layer_aggregation_mean(self, adata_balanced):
         """Test mean aggregation of counts."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -493,9 +363,9 @@ class TestBuildEmptyPseudobulkResult:
     """Tests for _build_empty_pseudobulk_result."""
 
     @pytest.fixture
-    def prepared_obs(self, simple_adata):
+    def prepared_obs(self, adata_balanced):
         """Create prepared obs with internal groups."""
-        obs = simple_adata.obs.copy()
+        obs = adata_balanced.obs.copy()
         mask = obs["cell_type"].isin(["TypeA", "TypeB"])
         obs = obs[mask].copy()
         obs["psbulk_condition"] = np.where(obs["cell_type"] == "TypeA", "query", "reference")
@@ -506,9 +376,9 @@ class TestBuildEmptyPseudobulkResult:
         """Create empty sample_stats DataFrame."""
         return pd.DataFrame(columns=["n_cells", "n_cells_condition", "fraction", "coverage"])
 
-    def test_pb_counts_is_empty(self, simple_adata, prepared_obs, empty_sample_stats):
+    def test_pb_counts_is_empty(self, adata_balanced, prepared_obs, empty_sample_stats):
         """Test that pb_counts has 0 rows."""
-        adata_sub = simple_adata[prepared_obs.index, :]
+        adata_sub = adata_balanced[prepared_obs.index, :]
 
         result = _build_empty_pseudobulk_result(
             adata_sub=adata_sub,
@@ -532,9 +402,9 @@ class TestBuildEmptyPseudobulkResult:
         assert len(result.pb_counts) == 0
         assert result.pb_counts.shape[0] == 0
 
-    def test_pb_counts_has_correct_columns(self, simple_adata, prepared_obs, empty_sample_stats):
+    def test_pb_counts_has_correct_columns(self, adata_balanced, prepared_obs, empty_sample_stats):
         """Test that pb_counts columns match var_names."""
-        adata_sub = simple_adata[prepared_obs.index, :]
+        adata_sub = adata_balanced[prepared_obs.index, :]
 
         result = _build_empty_pseudobulk_result(
             adata_sub=adata_sub,
@@ -557,9 +427,9 @@ class TestBuildEmptyPseudobulkResult:
 
         assert list(result.pb_counts.columns) == list(adata_sub.var_names)
 
-    def test_sample_table_has_two_rows(self, simple_adata, prepared_obs, empty_sample_stats):
+    def test_sample_table_has_two_rows(self, adata_balanced, prepared_obs, empty_sample_stats):
         """Test that sample_table has exactly 2 rows (query and reference)."""
-        adata_sub = simple_adata[prepared_obs.index, :]
+        adata_sub = adata_balanced[prepared_obs.index, :]
 
         result = _build_empty_pseudobulk_result(
             adata_sub=adata_sub,
@@ -583,9 +453,9 @@ class TestBuildEmptyPseudobulkResult:
         assert len(result.sample_table) == 2
         assert set(result.sample_table["psbulk_condition"]) == {"query", "reference"}
 
-    def test_strata_is_empty_list(self, simple_adata, prepared_obs, empty_sample_stats):
+    def test_strata_is_empty_list(self, adata_balanced, prepared_obs, empty_sample_stats):
         """Test that strata is an empty list."""
-        adata_sub = simple_adata[prepared_obs.index, :]
+        adata_sub = adata_balanced[prepared_obs.index, :]
 
         result = _build_empty_pseudobulk_result(
             adata_sub=adata_sub,
@@ -608,9 +478,9 @@ class TestBuildEmptyPseudobulkResult:
 
         assert result.strata == []
 
-    def test_design_formula_only_has_condition(self, simple_adata, prepared_obs, empty_sample_stats):
+    def test_design_formula_only_has_condition(self, adata_balanced, prepared_obs, empty_sample_stats):
         """Test that design formula only contains the condition term."""
-        adata_sub = simple_adata[prepared_obs.index, :]
+        adata_sub = adata_balanced[prepared_obs.index, :]
 
         result = _build_empty_pseudobulk_result(
             adata_sub=adata_sub,
@@ -636,9 +506,9 @@ class TestBuildEmptyPseudobulkResult:
         assert "batch" not in result.design_formula
         assert "age" not in result.design_formula
 
-    def test_design_matrix_shape(self, simple_adata, prepared_obs, empty_sample_stats):
+    def test_design_matrix_shape(self, adata_balanced, prepared_obs, empty_sample_stats):
         """Test that design matrix has correct shape (2 rows, 2 cols for intercept + condition)."""
-        adata_sub = simple_adata[prepared_obs.index, :]
+        adata_sub = adata_balanced[prepared_obs.index, :]
 
         result = _build_empty_pseudobulk_result(
             adata_sub=adata_sub,
@@ -662,9 +532,9 @@ class TestBuildEmptyPseudobulkResult:
         assert result.design_matrix.shape[0] == 2  # 2 samples (query, reference)
         assert result.design_matrix.shape[1] == 2  # Intercept + condition[query]
 
-    def test_grouped_is_not_none(self, simple_adata, prepared_obs, empty_sample_stats):
+    def test_grouped_is_not_none(self, adata_balanced, prepared_obs, empty_sample_stats):
         """Test that grouped object is created."""
-        adata_sub = simple_adata[prepared_obs.index, :]
+        adata_sub = adata_balanced[prepared_obs.index, :]
 
         result = _build_empty_pseudobulk_result(
             adata_sub=adata_sub,
@@ -687,9 +557,9 @@ class TestBuildEmptyPseudobulkResult:
 
         assert result.grouped is not None
 
-    def test_parameters_preserved(self, simple_adata, prepared_obs, empty_sample_stats):
+    def test_parameters_preserved(self, adata_balanced, prepared_obs, empty_sample_stats):
         """Test that input parameters are preserved in result."""
-        adata_sub = simple_adata[prepared_obs.index, :]
+        adata_sub = adata_balanced[prepared_obs.index, :]
 
         result = _build_empty_pseudobulk_result(
             adata_sub=adata_sub,
@@ -728,13 +598,13 @@ class TestBuildPseudobulkResult:
     """Tests for _build_pseudobulk_result."""
 
     @pytest.fixture
-    def prepared_data(self, simple_adata):
+    def prepared_data(self, adata_balanced):
         """Create prepared obs and adata_sub with internal groups."""
-        obs = simple_adata.obs.copy()
+        obs = adata_balanced.obs.copy()
         mask = obs["cell_type"].isin(["TypeA", "TypeB"])
         obs = obs[mask].copy()
         obs["psbulk_condition"] = np.where(obs["cell_type"] == "TypeA", "query", "reference")
-        adata_sub = simple_adata[obs.index, :]
+        adata_sub = adata_balanced[obs.index, :]
         return adata_sub, obs
 
     @pytest.fixture
@@ -1229,7 +1099,7 @@ class TestBuildPseudobulkResult:
 class TestEdgeCases:
     """Tests for edge cases and potential bugs."""
 
-    def test_n_cells_reflects_original_not_filtered(self, simple_adata):
+    def test_n_cells_reflects_original_not_filtered(self, adata_balanced):
         """Test that n_cells shows original counts, not filtered counts.
 
         This test documents current behavior - n_cells is computed BEFORE filtering.
@@ -1237,7 +1107,7 @@ class TestEdgeCases:
         """
         # Use strict filtering that will exclude some cells
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -1253,14 +1123,14 @@ class TestEdgeCases:
             _actual_cells_used = len(result.adata_sub)
             # These may differ - documenting current behavior
 
-    def test_query_reference_overlap_assigns_to_query(self, simple_adata):
+    def test_query_reference_overlap_assigns_to_query(self, adata_balanced):
         """Test that overlapping groups are assigned to query."""
         # Modify adata to have overlapping groups
-        simple_adata.obs["cell_type"] = pd.Categorical(list(simple_adata.obs["cell_type"]))
+        adata_balanced.obs["cell_type"] = pd.Categorical(list(adata_balanced.obs["cell_type"]))
 
         # This should warn and assign overlap to query
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query=["TypeA", "TypeB"],
             reference=["TypeB", "TypeC"],  # TypeB overlaps
@@ -1274,11 +1144,11 @@ class TestEdgeCases:
         # Current implementation: overlap goes to query
         assert "query" in typeB_conditions
 
-    def test_empty_strata_after_filtering(self, adata_with_small_groups):
+    def test_empty_strata_after_filtering(self, adata_unbalanced):
         """Test behavior when all strata are filtered out."""
         # Very strict criteria that no group can meet
         result = pseudobulk(
-            adata_with_small_groups,
+            adata_unbalanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -1292,14 +1162,14 @@ class TestEdgeCases:
         assert result.strata == []
         assert len(result.pb_counts) == 0
 
-    def test_single_stratum(self, simple_adata):
+    def test_single_stratum(self, adata_balanced):
         """Test with single stratum value (all cells in same batch)."""
         # Make all cells same batch
-        simple_adata.obs["batch"] = "single_batch"
-        simple_adata.obs["batch"] = pd.Categorical(simple_adata.obs["batch"])
+        adata_balanced.obs["batch"] = "single_batch"
+        adata_balanced.obs["batch"] = pd.Categorical(adata_balanced.obs["batch"])
 
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -1311,7 +1181,7 @@ class TestEdgeCases:
         if result.strata:
             assert len(result.sample_table) == 2
 
-    def test_single_stratum_value_produces_valid_samples_not_collapsed(self, simple_adata):
+    def test_single_stratum_value_produces_valid_samples_not_collapsed(self, adata_balanced):
         """Test with single stratum value - these are valid samples, not collapsed.
 
         This is a critical distinction: when valid strata produce only 1 sample
@@ -1319,11 +1189,11 @@ class TestEdgeCases:
         were created from proper stratification.
         """
         # Make all cells same batch
-        simple_adata.obs["batch"] = "single_batch"
-        simple_adata.obs["batch"] = pd.Categorical(simple_adata.obs["batch"])
+        adata_balanced.obs["batch"] = "single_batch"
+        adata_balanced.obs["batch"] = pd.Categorical(adata_balanced.obs["batch"])
 
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -1341,14 +1211,14 @@ class TestEdgeCases:
         assert not result.sample_table["collapsed"].any()
         assert not result.collapsed
 
-    def test_many_strata_columns(self, simple_adata):
+    def test_many_strata_columns(self, adata_balanced):
         """Test with many stratification columns."""
         # Add more columns
-        simple_adata.obs["tissue"] = pd.Categorical(np.random.choice(["brain", "heart"], len(simple_adata)))
-        simple_adata.obs["sex"] = pd.Categorical(np.random.choice(["M", "F"], len(simple_adata)))
+        adata_balanced.obs["tissue"] = pd.Categorical(np.random.choice(["brain", "heart"], len(adata_balanced)))
+        adata_balanced.obs["sex"] = pd.Categorical(np.random.choice(["M", "F"], len(adata_balanced)))
 
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -1361,10 +1231,10 @@ class TestEdgeCases:
         # All strata should be preserved (if they pass validation)
         assert "batch" in result.strata
 
-    def test_covariate_strategy_sequence_order(self, simple_adata):
+    def test_covariate_strategy_sequence_order(self, adata_balanced):
         """Test that sequence_order drops last covariate first."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -1377,10 +1247,10 @@ class TestEdgeCases:
         # Just verify it runs without error
         assert isinstance(result, PseudobulkResult)
 
-    def test_covariate_strategy_most_levels(self, simple_adata):
+    def test_covariate_strategy_most_levels(self, adata_balanced):
         """Test that most_levels drops covariate with most categories first."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -1393,10 +1263,10 @@ class TestEdgeCases:
         # Just verify it runs without error
         assert isinstance(result, PseudobulkResult)
 
-    def test_sample_table_statistics_values_correct(self, simple_adata):
+    def test_sample_table_statistics_values_correct(self, adata_balanced):
         """Test that sample_table statistics columns have reasonable values."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -1423,10 +1293,10 @@ class TestEdgeCases:
 class TestIntegration:
     """Integration tests ensuring the full pipeline works correctly."""
 
-    def test_full_pipeline_with_all_options(self, simple_adata):
+    def test_full_pipeline_with_all_options(self, adata_balanced):
         """Test full pipeline with all options specified."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference=["TypeB", "TypeC"],
@@ -1453,10 +1323,10 @@ class TestIntegration:
             assert len(result.pb_counts) > 0
             assert len(result.sample_table) == len(result.pb_counts)
 
-    def test_result_can_be_used_for_downstream(self, simple_adata):
+    def test_result_can_be_used_for_downstream(self, adata_balanced):
         """Test that result contains all necessary info for DE analysis."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -1475,10 +1345,10 @@ class TestIntegration:
         if result.strata:
             assert len(result.design_matrix) == len(result.sample_table)
 
-    def test_sample_table_contains_all_required_columns(self, simple_adata):
+    def test_sample_table_contains_all_required_columns(self, adata_balanced):
         """Test that sample_table has all the new statistics columns."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",
@@ -1491,10 +1361,10 @@ class TestIntegration:
             for col in required_columns:
                 assert col in result.sample_table.columns, f"Missing column: {col}"
 
-    def test_statistics_sum_correctly(self, simple_adata):
+    def test_statistics_sum_correctly(self, adata_balanced):
         """Test that n_cells values sum correctly per condition."""
         result = pseudobulk(
-            simple_adata,
+            adata_balanced,
             group_key="cell_type",
             query="TypeA",
             reference="TypeB",

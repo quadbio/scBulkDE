@@ -25,6 +25,7 @@ def make_adata():
         sparse: bool = False,
         layer_name: str | None = None,
         categorical_group_key: bool = True,
+        seed: int = 42,
     ):
         """Create a test AnnData object.
 
@@ -74,7 +75,7 @@ def make_adata():
             group_labels.extend([g] * count)
 
         # Create expression matrix
-        rng = np.random.default_rng(42)
+        rng = np.random.default_rng(seed)
         X = rng.poisson(5, size=(n_cells, n_genes)).astype(np.float32)
 
         if sparse:
@@ -125,30 +126,98 @@ def make_obs():
     def _make_obs(
         n_query: int = 100,
         n_reference: int = 100,
-        query_strata: dict[str, list] | None = None,
-        reference_strata: dict[str, list] | None = None,
-        strata_columns: list[str] | None = None,
+        condition_col: str = "psbulk_condition",
+        strata: dict[str, dict[str, list]] | None = None,
     ):
-        """Create obs DataFrame with query/reference labels and strata."""
-        if strata_columns is None:
-            strata_columns = ["batch"]
+        """Create obs DataFrame with query/reference and flexible strata."""
+        n_total = n_query + n_reference
+        data = {condition_col: ["query"] * n_query + ["reference"] * n_reference}
 
-        data = {"psbulk_condition": ["query"] * n_query + ["reference"] * n_reference}
+        if strata:
+            for col, values in strata.items():
+                data[col] = values["query"] + values["reference"]
 
-        # Add strata columns
-        for col in strata_columns:
-            if query_strata and col in query_strata:
-                q_values = query_strata[col]
-            else:
-                q_values = [f"{col}_0"] * n_query
-
-            if reference_strata and col in reference_strata:
-                r_values = reference_strata[col]
-            else:
-                r_values = [f"{col}_0"] * n_reference
-
-            data[col] = q_values + r_values
-
-        return pd.DataFrame(data, index=[f"cell_{i}" for i in range(n_query + n_reference)])
+        return pd.DataFrame(data, index=[f"cell_{i}" for i in range(n_total)])
 
     return _make_obs
+
+
+@pytest.fixture
+def adata_balanced(make_adata):
+    """AnnData with balanced groups across conditions."""
+    return make_adata(
+        n_cells=100,
+        n_genes=50,
+        groups=["TypeA", "TypeB", "TypeC"],
+        group_counts=[40, 30, 30],
+        categorical_covariates={
+            "batch": pd.Categorical(["batch1"] * 50 + ["batch2"] * 50),
+            "donor": pd.Categorical(["donor1"] * 25 + ["donor2"] * 25 + ["donor3"] * 25 + ["donor4"] * 25),
+        },
+        continuous_covariates={
+            "age": np.random.uniform(20, 80, 100),
+        },
+        seed=42,
+    )
+
+
+@pytest.fixture
+def adata_unbalanced(make_adata):
+    """AnnData with unbalanced groups."""
+    return make_adata(
+        n_cells=200,
+        n_genes=20,
+        groups=["TypeA", "TypeB"],
+        group_counts=[100, 100],
+        categorical_covariates={
+            "batch": pd.Categorical(["batch1"] * 90 + ["batch2"] * 10 + ["batch1"] * 10 + ["batch2"] * 90),
+        },
+        seed=42,
+    )
+
+
+@pytest.fixture
+def adata_sparse(make_adata):
+    """AnnData with sparse matrix."""
+    return make_adata(
+        n_cells=80,
+        n_genes=30,
+        groups=["TypeA", "TypeB"],
+        group_counts=[40, 40],
+        categorical_covariates={
+            "batch": pd.Categorical(["batch1"] * 40 + ["batch2"] * 40),
+        },
+        sparse=True,
+        seed=42,
+    )
+
+
+@pytest.fixture
+def adata_confounded(make_adata):
+    """AnnData where covariates are confounded."""
+    return make_adata(
+        n_cells=100,
+        n_genes=20,
+        groups=["TypeA", "TypeB"],
+        group_counts=[50, 50],
+        categorical_covariates={
+            "batch": ["batch1"] * 50 + ["batch2"] * 50,
+            "donor": ["donor1"] * 25 + ["donor2"] * 25 + ["donor3"] * 25 + ["donor4"] * 25,
+        },
+        seed=42,
+    )
+
+
+@pytest.fixture
+def adata_single_stratum(make_adata):
+    """AnnData where one stratum has only one sample."""
+    return make_adata(
+        n_cells=100,
+        n_genes=20,
+        groups=["TypeA", "TypeB"],
+        group_counts=[90, 10],
+        categorical_covariates={
+            "batch": ["batch1"] * 90 + ["batch2"] * 10,
+        },
+        seed=42,
+    )
