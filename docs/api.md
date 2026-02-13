@@ -9,8 +9,7 @@
 .. autosummary::
     :toctree: generated
 
-    pp.basic_preproc
-    pp.elaborate_example
+    pp.pseudobulk
 ```
 
 ## Tools
@@ -22,18 +21,5 @@
 .. autosummary::
     :toctree: generated
 
-    tl.basic_tool
-```
-
-## Plotting
-
-```{eval-rst}
-.. module:: scbulkde.pl
-.. currentmodule:: scbulkde
-
-.. autosummary::
-    :toctree: generated
-
-    pl.basic_plot
-    pl.BasicClass
+    tl.de
 ```
