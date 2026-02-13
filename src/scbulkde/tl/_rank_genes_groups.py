@@ -151,7 +151,8 @@ def rank_genes_groups(
         padj = res["padj"].to_numpy()
         lfc = res["log2FoldChange"].to_numpy()
 
-        scores_sort = np.abs(scores) if rankby_abs else scores
+        # FIX LATER: using lfc here because it looks better than the test statistic
+        scores_sort = np.abs(lfc) if rankby_abs else lfc
         top_idx = _select_top_n(scores_sort, n_genes_user)
 
         if stats is None:
