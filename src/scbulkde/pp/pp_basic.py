@@ -298,6 +298,7 @@ def _build_empty_pseudobulk_result(
     pb_counts is empty (0 rows) since no valid samples exist.
     """
     obs_grouped = obs.groupby(group_key_internal, observed=True, sort=False)
+    obs_grouped = obs_grouped[[group_key_internal]]
 
     # Create empty pseudobulk counts DataFrame (0 rows, genes as columns)
     pb_counts = pd.DataFrame(columns=adata_sub.var_names)
@@ -406,13 +407,15 @@ def _build_pseudobulk_result(
     design_factors_continuous = sample_factors_continuous.copy()
 
     # Iteratively build design matrix, dropping covariates if needed for full rank
-    design_formula, mm = _build_full_rank_design(
+    design_formula, mm, factors_cat_filtered, factors_cont_filtered = _build_full_rank_design(
         sample_table=sample_table,
         group_key_internal=group_key_internal,
         design_factors_categorical=design_factors_categorical,
         design_factors_continuous=design_factors_continuous,
         covariate_strategy=covariate_strategy,
     )
+
+    obs_grouped = obs_grouped[[group_key_internal] + factors_cat_filtered + factors_cont_filtered]
 
     # Aggregate counts into pseudobulk samples
     pb_counts = _aggregate_counts(

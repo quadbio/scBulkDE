@@ -336,7 +336,7 @@ def _build_full_rank_design(
     design_factors_categorical: list[str],
     design_factors_continuous: list[str],
     covariate_strategy: str,
-) -> tuple[str, pd.DataFrame]:
+) -> tuple[str, pd.DataFrame, list[str], list[str]]:
     """
     Build a full-rank design matrix, dropping covariates if necessary.
 
@@ -354,7 +354,7 @@ def _build_full_rank_design(
 
         if np.linalg.matrix_rank(mm.values) == mm.shape[1]:
             logger.info(f"Design matrix with shape {mm.shape} has full rank using design formula:\n{design_formula}")
-            return design_formula, mm
+            return design_formula, mm, design_factors_categorical, design_factors_continuous
 
         # Drop categorical covariates first (they generate more columns)
         if design_factors_categorical:
@@ -388,7 +388,7 @@ def _build_full_rank_design(
     mm = model_matrix(design_formula, data=sample_table)
     logger.info(f"Design matrix with shape {mm.shape} using minimal design formula:\n{design_formula}")
 
-    return design_formula, mm
+    return design_formula, mm, design_factors_categorical, design_factors_continuous
 
 
 # ================= Helper functions for tl ================= #
