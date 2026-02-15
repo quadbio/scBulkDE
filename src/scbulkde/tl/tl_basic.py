@@ -482,23 +482,29 @@ def _run_de_pseudoreplicates(
 ) -> DEResult:
     """Run DE analysis with pseudoreplicate generation."""
     # Get the grouped obj
-    grouped_obs = pb_result.grouped.obj
+    obs_grouped = pb_result.grouped.obj
+    groupby_cols = list(pb_result.grouped.grouper.names)
 
     # Initialize the cell usage tracker and cache. The cache is used to quickly access cell indices for each condition
     # The initialization is done before starting any repetition, so the usage is tracked globally, so for each repetition
     # and for each pseudoreplicate that needs to be generated in that repetition.
-    all_cell_indices = grouped_obs.index.to_numpy()
+    all_cell_indices = obs_grouped.index.to_numpy()
     cell_usage_tracker = dict.fromkeys(all_cell_indices, 0)
     cell_pool_cache = _build_cell_pool_cache(pb_result, rng, shuffle=False)
-
-    sample_table_cols = list(pb_result.sample_table.columns)
-    groupby_cols = list(pb_result.grouped.grouper.names)
 
     repetition_results = {}
 
     for it in range(n_repetitions):
-        pr_counts_collected = []
-        pr_meta_collected = []
+        # Now this here is funny. We are going to use the list to collect all cell ids that are used for pseudoreplicates
+        # in this iteration but don't keep track of the actual metadata. Further down we can then just subset the obs dataframe
+        # to these cells and by grouping them again, we will retrieve the metadata information because each set of cells of a
+        # pseudoreplicate is generated from exactly on sample (or all cells if collapsed)
+        pr_indices_collected = []
+
+        # There is one catch though: If pseudoreplicates are generated from the same sample, they would be added together and
+        # appear as one when using this approach. So we need an additional ID
+        pr_id_map = {}
+        pr_id_counter = 0
 
         # Generate required pseudoreplicates for each condition
         for condition, n_needed in required_samples.items():
@@ -506,7 +512,7 @@ def _run_de_pseudoreplicates(
                 logger.debug(
                     f"Generating pseudoreplicate for condition '{condition}' (iteration {it + 1}/{n_repetitions})"
                 )
-                pr_counts, pr_meta = _generate_pseudoreplicate(
+                pr_indices = _generate_pseudoreplicate(
                     adata=pb_result.adata_sub,
                     condition=condition,
                     cell_pool_cache=cell_pool_cache,
@@ -517,29 +523,48 @@ def _run_de_pseudoreplicates(
                     continuous_aggregation=pb_result.continuous_aggregation,
                     resampling_fraction=resampling_fraction,
                     groupby_cols=groupby_cols,
-                    grouped_obs=grouped_obs,
+                    obs_grouped=obs_grouped,
                     rng=rng,
                 )
 
-                # Ensure metadata schema matches
-                for col in sample_table_cols:
-                    if col not in pr_meta.columns:
-                        pr_meta[col] = np.nan
+                for idx in pr_indices:
+                    pr_id_map[idx] = pr_id_counter
 
-                pr_meta = pr_meta.reindex(columns=sample_table_cols)
+                pr_indices_collected.extend(pr_indices)
+                pr_id_counter += 1
 
-                pr_counts_collected.append(pr_counts)
-                pr_meta_collected.append(pr_meta)
+        # Now here comes the magic, even though we don't know which cell in pr_indices_collected belongs to what sample
+        # we can get this information back easily by subsetting and re-grouping, while respecting the pseudoreplicate ID
+        pr_obs = obs_grouped.loc[pr_indices_collected]
+        pr_obs["__prID__"] = pr_obs.index.map(pr_id_map)
 
-        # Combine with original samples
-        # If samples exist, append the pseudoreplicates
-        if len(pb_result.pb_counts) > 0:
-            counts = pd.concat([pb_result.pb_counts] + pr_counts_collected, axis=0, ignore_index=True)
-            sample_table = pd.concat([pb_result.sample_table] + pr_meta_collected, axis=0, ignore_index=True)
-        # If they don't, just concatenate them
+        pr_obs_grouped = pr_obs.groupby(groupby_cols + ["__prID__"], observed=True, sort=False)
+
+        # Now we can call _aggregate counts on ALL pseudoreplicates at once! That saves enourmous amounts of
+        # run time as we only need to do one pd.concat operation
+        pr_counts = _aggregate_counts(
+            pb_result.adata_sub, pr_obs_grouped, layer=pb_result.layer, layer_aggregation=pb_result.layer_aggregation
+        )
+
+        # Aggregate metadata
+        continuous_covariates = pb_result.continuous_covariates
+        if continuous_covariates:
+            agg_func = _get_aggregation_function(pb_result.continuous_aggregation)
+            pr_meta = pr_obs_grouped[continuous_covariates].agg(agg_func).reset_index()
         else:
-            counts = pd.concat(pr_counts_collected, axis=0, ignore_index=True)
-            sample_table = pd.concat(pr_meta_collected, axis=0, ignore_index=True)
+            pr_meta = pr_obs_grouped.first().reset_index()[groupby_cols]
+
+        # Remove the pseudoreplicate ID column, we don't need it anymore
+        pr_meta = pr_meta.drop(columns=["__prID__"])
+
+        # Combine with original samples. If samples exist, append the pseudoreplicates
+        if len(pb_result.pb_counts) > 0:
+            counts = pd.concat([pb_result.pb_counts, pr_counts], axis=0, ignore_index=True)
+            sample_table = pd.concat([pb_result.sample_table, pr_meta], axis=0, ignore_index=True)
+        # If they don't, just take them as is
+        else:
+            counts = pr_counts
+            sample_table = pr_meta
 
         counts.index = counts.index.astype(str)
         sample_table.index = sample_table.index.astype(str)
@@ -648,17 +673,10 @@ def _build_cell_pool_cache(
 
 
 def _generate_pseudoreplicate(
-    adata: ad.AnnData,
     condition: str,
     cell_pool_cache: dict,
     cell_usage_tracker: dict,
-    layer: str,
-    layer_aggregation: Literal["sum", "mean"],
-    continuous_covariates: Sequence[str],
-    continuous_aggregation: Literal["mean", "sum", "median"] | Callable,
     resampling_fraction: float,
-    groupby_cols: list[str],
-    grouped_obs: pd.DataFrame,
     rng: np.random.Generator,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Generate pseudoreplicate using greedy cell usage minimization.
@@ -731,69 +749,4 @@ def _generate_pseudoreplicate(
         cell_usage_tracker[cell_idx] = cell_usage_tracker.get(cell_idx, 0) + 1
 
     # Aggregate expression and metadata
-    return _aggregate_pseudoreplicate(
-        adata=adata,
-        sampled_cell_indices=sampled_cell_indices,
-        groupby_cols=groupby_cols,
-        layer=layer,
-        layer_aggregation=layer_aggregation,
-        continuous_covariates=continuous_covariates,
-        continuous_aggregation=continuous_aggregation,
-        grouped_obs=grouped_obs,
-    )
-
-
-def _aggregate_pseudoreplicate(
-    adata: ad.AnnData,
-    sampled_cell_indices: np.ndarray,
-    groupby_cols: list[str],
-    layer: str,
-    layer_aggregation: Literal["sum", "mean"],
-    continuous_covariates: Sequence[str],
-    continuous_aggregation: Literal["mean", "sum", "median"] | Callable,
-    grouped_obs: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Aggregate expression and metadata for sampled cells.
-
-    Parameters
-    ----------
-    adata
-        AnnData object containing expression data
-    sampled_cell_indices
-        Cell indices (labels) to aggregate
-    groupby_cols
-        Columns to group by (includes internal psbulk_condition)
-    layer
-        Layer to aggregate from
-    layer_aggregation
-        Aggregation method for expression
-    continuous_covariates
-        Continuous covariates to aggregate
-    continuous_aggregation
-        Aggregation method for covariates
-    grouped_obs
-        The grouped.obj DataFrame that contains internal columns like psbulk_condition
-
-    Returns
-    -------
-    tuple[pd.DataFrame, pd.DataFrame]
-        (aggregated_counts, aggregated_metadata)
-    """
-    # The sampled cells must be contained in one specific group
-    # So subset to the cells of the pseudoreplicate, this yields a dataframe and
-    # re-group. That way the _aggregate_counts can be used, because it operates per group on a grouped df
-    # In this case, there is just one group
-    source_obs = grouped_obs.loc[sampled_cell_indices]
-    sampled_grouped = source_obs.groupby(groupby_cols, observed=True, sort=False)
-
-    # Aggregate counts
-    pr_counts = _aggregate_counts(adata, sampled_grouped, layer=layer, layer_aggregation=layer_aggregation)
-
-    # Aggregate metadata
-    if continuous_covariates:
-        agg_func = _get_aggregation_function(continuous_aggregation)
-        pr_meta = sampled_grouped[continuous_covariates].agg(agg_func).reset_index()
-    else:
-        pr_meta = sampled_grouped.first().reset_index()[groupby_cols]
-
-    return pr_counts, pr_meta
+    return sampled_cell_indices

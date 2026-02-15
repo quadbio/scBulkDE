@@ -408,51 +408,6 @@ def _compute_required_samples(
     return {c: max(0, min_samples - counts.get(c, 0)) for c in ["query", "reference"]}
 
 
-def _generate_pseudoreplicate(
-    adata: ad.AnnData,
-    condition: str,
-    grouped: pd.api.typing.DataFrameGroupBy,
-    layer: str,
-    layer_aggregation: Literal["sum", "mean"],
-    continuous_covariates: Sequence[str],
-    continuous_aggregation: Literal["mean", "sum", "median"] | Callable,
-    resampling_fraction: float,
-    rng: np.random.Generator,
-):
-    """Generate a single pseudoreplicate for a given condition."""
-    # Get a random sample from the available samples for the condition
-    # rng.choice() doesn't work because of heterogeneous data types
-    all_condition_samples = [(m, o) for m, o in grouped if condition in m]
-    rng.shuffle(all_condition_samples)
-    source_meta, source_obs = all_condition_samples[0]
-
-    # Resample cells without replacement
-    n_sample = max(1, int(len(source_obs) * resampling_fraction))
-    sampled_cells = rng.choice(source_obs.index, size=n_sample, replace=False)
-    sampled_obs = source_obs.loc[sampled_cells, :]
-
-    # Get the grouping variables for aggregation
-    groupby = grouped.grouper.names
-
-    # In order to use _aggregate_counts, we need to re-group the sampled_obs
-    # now, there is only one group of course
-    sampled_grouped = sampled_obs.groupby(groupby, observed=True, sort=False)
-
-    # Aggregate counts
-    pr_counts = _aggregate_counts(adata, sampled_grouped, layer=layer, layer_aggregation=layer_aggregation)
-
-    # Generate a new row for the sample table
-    if continuous_covariates:
-        agg_func = _get_aggregation_function(continuous_aggregation)
-        pr_meta = sampled_grouped[continuous_covariates].agg(agg_func).reset_index()
-    else:
-        pr_meta = sampled_grouped.first().reset_index()[groupby]
-    # print(pr_meta)
-    # print(pr_counts.loc[:,'GFAP'])
-
-    return pr_counts, pr_meta
-
-
 def _aggregate_results(
     results: dict[int, pd.DataFrame],
     min_list_overlap: float,
