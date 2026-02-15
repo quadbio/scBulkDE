@@ -408,53 +408,6 @@ def _compute_required_samples(
     return {c: max(0, min_samples - counts.get(c, 0)) for c in ["query", "reference"]}
 
 
-def _aggregate_results(
-    results: dict[int, pd.DataFrame],
-    min_list_overlap: float,
-    alpha: float,
-) -> tuple[pd.DataFrame, int, int]:
-    from collections import Counter
-
-    import pandas as pd
-
-    # Store how many genes were tested in each iteration
-    n_genes_tested = results[0].shape[0]
-
-    # Collect all significant genes for each iteration
-    sig_gene_lists = []
-    for _, res in results.items():
-        sig_genes = res.index[res["padj"] < alpha].tolist()
-        sig_gene_lists.append(set(sig_genes))
-
-    # Find genes that are in at least min_list_overlap fraction of lists
-    gene_counter = Counter()
-    for gene_list in sig_gene_lists:
-        for gene in gene_list:
-            gene_counter[gene] += 1
-    n_required = int(len(sig_gene_lists) * min_list_overlap)
-    selected_genes = {gene for gene, count in gene_counter.items() if count >= n_required}
-
-    # Make a list of all genes encountered in any iteration
-    all_genes = set()
-    for res in results.values():
-        all_genes.update(res.index)
-
-    # Use mean as an aggregation function for all genes
-    aggregated_results = []
-    for _, res in results.items():
-        # reindex to all genes so all are present
-        aggregated_results.append(res.reindex(list(all_genes)))
-    results_df = pd.concat(aggregated_results).groupby(level=0).mean()
-
-    # Add the 'min_list_overlap_sig' column (True if gene is in selected_genes, else False)
-    results_df["min_list_overlap_sig"] = results_df.index.isin(selected_genes)
-
-    # Store how many genes were significant in at least min_list_overlap fraction of lists
-    n_genes_significant = len(selected_genes)
-
-    return results_df, n_genes_tested, n_genes_significant
-
-
 # ==================== Helper functions for pp and tl ================= #
 
 

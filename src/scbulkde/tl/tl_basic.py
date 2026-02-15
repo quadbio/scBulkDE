@@ -15,7 +15,6 @@ from scbulkde.ut import DEResult, PseudobulkResult, logger
 from scbulkde.ut._performance import performance
 from scbulkde.ut.ut_basic import (
     _aggregate_counts,
-    _aggregate_results,
     _get_aggregation_function,
 )
 
@@ -48,7 +47,6 @@ def de(
     # pseudoreplicate parameters
     n_repetitions: int = 3,
     resampling_fraction: float = 0.33,
-    min_list_overlap: float = 1.0,
     # DE parameters
     min_samples: int = 3,
     alpha: float = 0.05,
@@ -129,10 +127,6 @@ def de(
     resampling_fraction : float, default=0.6
         Fraction of cells to sample (with replacement) from a valid pseudobulk
         to generate a pseudoreplicate.
-    min_list_overlap : float, default=1.0
-        Minimum fraction of repetitions in which a gene must be significant to
-        be included in final results. A value of 1.0 requires
-        significance in all repetitions.
     min_samples : int, default=3
         Minimum number of pseudobulk samples required per condition for direct
         DE testing. If fewer exist, falls back according to `fallback_strategy`.
@@ -319,7 +313,6 @@ def de(
             required_samples=required_samples,
             n_repetitions=n_repetitions,
             resampling_fraction=resampling_fraction,
-            min_list_overlap=min_list_overlap,
             rng=rng,
             engine_name=engine,
             engine_kwargs=engine_kwargs,
@@ -475,7 +468,6 @@ def _run_de_pseudoreplicates(
     required_samples: dict[str, int],
     n_repetitions: int,
     resampling_fraction: float,
-    min_list_overlap: float,
     rng: np.random.Generator,
     engine_name: str,
     engine_kwargs: dict,
@@ -513,17 +505,10 @@ def _run_de_pseudoreplicates(
                     f"Generating pseudoreplicate for condition '{condition}' (iteration {it + 1}/{n_repetitions})"
                 )
                 pr_indices = _generate_pseudoreplicate(
-                    adata=pb_result.adata_sub,
                     condition=condition,
                     cell_pool_cache=cell_pool_cache,
                     cell_usage_tracker=cell_usage_tracker,
-                    layer=pb_result.layer,
-                    layer_aggregation=pb_result.layer_aggregation,
-                    continuous_covariates=pb_result.continuous_covariates,
-                    continuous_aggregation=pb_result.continuous_aggregation,
                     resampling_fraction=resampling_fraction,
-                    groupby_cols=groupby_cols,
-                    obs_grouped=obs_grouped,
                     rng=rng,
                 )
 
@@ -584,12 +569,10 @@ def _run_de_pseudoreplicates(
         )
         repetition_results[it] = results
 
-    # Aggregate results
-    aggregated_results, n_genes_tested, n_genes_significant = _aggregate_results(
-        results=repetition_results,
-        min_list_overlap=min_list_overlap,
-        alpha=alpha,
-    )
+    # Aggregate results. Well so this is statistically wrong, will implemement a
+    # recalculation of the p-value using the mean test statistic later
+    results = pd.concat(repetition_results.values()).groupby(level=0).mean()
+    n_sig = (results["padj"] < alpha).sum()
 
     # Inform the user about the cell usage
     usage_counts = np.array(list(cell_usage_tracker.values()))
@@ -600,12 +583,13 @@ def _run_de_pseudoreplicates(
 
     # Inform the user about the de results
     logger.info(
-        f"DE complete with pseudoreplicates: {n_genes_tested} genes tested, "
-        f"{n_genes_significant} significant in >= {min_list_overlap * 100:.0f}% of {n_repetitions} repetitions"
+        logger.info(
+            f"DE complete with pseudoreplicates: {len(results)} genes tested, {n_sig} significant (padj < {alpha})"
+        )
     )
 
     return DEResult(
-        results=aggregated_results,
+        results=results,
         query=pb_result.query,
         reference=pb_result.reference,
         design=pb_result.design_formula,
