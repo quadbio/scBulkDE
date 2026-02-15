@@ -537,7 +537,7 @@ def _run_de_pseudoreplicates(
             agg_func = _get_aggregation_function(pb_result.continuous_aggregation)
             pr_meta = pr_obs_grouped[continuous_covariates].agg(agg_func).reset_index()
         else:
-            pr_meta = pr_obs_grouped.first().reset_index()[groupby_cols]
+            pr_meta = pr_obs_grouped.first().reset_index()[groupby_cols + ["__prID__"]]
 
         # Remove the pseudoreplicate ID column, we don't need it anymore
         pr_meta = pr_meta.drop(columns=["__prID__"])
