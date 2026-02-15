@@ -3,13 +3,11 @@ from ._logging import _in_notebook, logger, set_log_level
 from ._performance import performance, set_performance_enabled
 from .ut_basic import (
     _aggregate_counts,
-    _aggregate_results,
     _build_design_formula,
     _build_full_rank_design,
     _compute_required_samples,
     _drop_covariate,
     _fraction_expressing,
-    _generate_pseudoreplicate,
     _generate_samples,
     _get_aggregation_function,
     _get_X_and_var_names,
