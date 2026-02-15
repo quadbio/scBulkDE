@@ -14,8 +14,9 @@ from scbulkde.pp import pseudobulk
 from scbulkde.ut import DEResult, PseudobulkResult, logger
 from scbulkde.ut._performance import performance
 from scbulkde.ut.ut_basic import (
+    _aggregate_counts,
     _aggregate_results,
-    _generate_pseudoreplicate,
+    _get_aggregation_function,
 )
 
 if TYPE_CHECKING:
@@ -46,7 +47,7 @@ def de(
     resolve_conflicts: bool = True,
     # pseudoreplicate parameters
     n_repetitions: int = 3,
-    resampling_fraction: float = 0.6,
+    resampling_fraction: float = 0.33,
     min_list_overlap: float = 1.0,
     # DE parameters
     min_samples: int = 3,
@@ -268,7 +269,7 @@ def de(
 
     # Case 1: Sufficient samples exist
     if not needs_fallback:
-        print("DEBUG: USING DIRECT DE")
+        logger.debug("Using direct DE")
         logger.info(f"Running DE with {engine} engine (sufficient samples)...")
         return _run_de_direct(
             pb_result=pb_result,
@@ -292,7 +293,7 @@ def de(
 
     # Case 2a: Single-cell fallback
     if fallback_strategy == "single_cell":
-        print("DEBUG: USING SINGLE-CELL DE FALLBACK")
+        logger.debug("Using single-cell DE.")
         logger.info(f"Running single-cell DE with {engine} engine...")
         return _run_de_single_cell(
             pb_result=pb_result,
@@ -305,19 +306,9 @@ def de(
 
     # Case 2b: Pseudoreplicates fallback
     if fallback_strategy == "pseudoreplicates":
-        print("DEBUG: USING PSEUDOREPLICATES DE FALLBACK")
-        # Check if we can generate pseudoreplicates - need cells for each condition
-        can_generate_query, can_generate_ref = _can_generate_pseudoreplicates(pb_result)
-
-        if not can_generate_query or not can_generate_ref:
-            raise ValueError(
-                f"Cannot generate pseudoreplicates: need cells for each condition. "
-                f"Query cells available: {can_generate_query}, Reference cells available: {can_generate_ref}. "
-                f"Consider using fallback_strategy='single_cell' instead."
-            )
-
+        logger.debug("Using pseudoreplicate DE.")
         logger.info(
-            f"Insufficient samples - generating pseudoreplicates. "
+            f"Insufficient samples - generating pseudoreplicates: "
             f"Existing: {existing_samples}, Required additional: {required_samples}"
         )
         return _run_de_pseudoreplicates(
@@ -364,43 +355,6 @@ def _count_existing_samples(
 
     # Simply count how many query and reference groups there are
     return pd.Series(values).value_counts().reindex(["query", "reference"], fill_value=0).to_dict()
-
-
-@performance(logger=logger)
-def _can_generate_pseudoreplicates(
-    pb_result: PseudobulkResult,
-) -> tuple[bool, bool]:
-    """Check if pseudoreplicates can be generated for each condition.
-
-    Pseudoreplicates can be generated if there are cells for each condition in the
-    subset AnnData. This is checked by looking at the grouped object's underlying
-    DataFrame, which contains all cells that passed filtering.
-
-    Parameters
-    ----------
-    pb_result
-        The pseudobulk result containing the grouped data and subset AnnData.
-
-    Returns
-    -------
-    tuple[bool, bool]
-        (can_generate_query, can_generate_reference) - True if cells exist for that condition.
-
-    Notes
-    -----
-    This function replaces the previous approach of checking the MultiIndex.
-    The key insight is that if cells exist in the adata_sub for a condition,
-    we can always generate pseudoreplicates by sampling from those cells,
-    regardless of whether valid strata exist.
-    """
-    group_key_internal = pb_result.group_key_internal
-    obs = pb_result.grouped.obj  # The underlying DataFrame used for grouping
-
-    condition_values = obs[group_key_internal]
-    has_query = (condition_values == "query").any()
-    has_reference = (condition_values == "reference").any()
-
-    return has_query, has_reference
 
 
 def _run_de_direct(
@@ -527,58 +481,66 @@ def _run_de_pseudoreplicates(
     engine_kwargs: dict,
 ) -> DEResult:
     """Run DE analysis with pseudoreplicate generation."""
-    repetition_results = {}
+    # Get the grouped obj
+    grouped_obs = pb_result.grouped.obj
 
-    # Get columns that should be in sample_table for pseudoreplicates
+    # Initialize the cell usage tracker and cache. The cache is used to quickly access cell indices for each condition
+    # The initialization is done before starting any repetition, so the usage is tracked globally, so for each repetition
+    # and for each pseudoreplicate that needs to be generated in that repetition.
+    all_cell_indices = grouped_obs.index.to_numpy()
+    cell_usage_tracker = dict.fromkeys(all_cell_indices, 0)
+    cell_pool_cache = _build_cell_pool_cache(pb_result, rng, shuffle=False)
+
     sample_table_cols = list(pb_result.sample_table.columns)
     groupby_cols = list(pb_result.grouped.grouper.names)
+
+    repetition_results = {}
 
     for it in range(n_repetitions):
         pr_counts_collected = []
         pr_meta_collected = []
 
-        # For each condition, generate the required number of pseudoreplicates
+        # Generate required pseudoreplicates for each condition
         for condition, n_needed in required_samples.items():
             for _ in range(n_needed):
+                logger.debug(
+                    f"Generating pseudoreplicate for condition '{condition}' (iteration {it + 1}/{n_repetitions})"
+                )
                 pr_counts, pr_meta = _generate_pseudoreplicate(
                     adata=pb_result.adata_sub,
                     condition=condition,
-                    grouped=pb_result.grouped,
+                    cell_pool_cache=cell_pool_cache,
+                    cell_usage_tracker=cell_usage_tracker,
                     layer=pb_result.layer,
                     layer_aggregation=pb_result.layer_aggregation,
                     continuous_covariates=pb_result.continuous_covariates,
                     continuous_aggregation=pb_result.continuous_aggregation,
                     resampling_fraction=resampling_fraction,
+                    groupby_cols=groupby_cols,
+                    grouped_obs=grouped_obs,
                     rng=rng,
                 )
 
-                # Ensure pr_meta has all columns that sample_table has
-                # Fill missing columns with appropriate values
+                # Ensure metadata schema matches
                 for col in sample_table_cols:
                     if col not in pr_meta.columns:
-                        if col in groupby_cols:
-                            # Already should be there from groupby
-                            pass
-                        else:
-                            # Set to NaN or a default - continuous covariates should be handled
-                            pr_meta[col] = np.nan
+                        pr_meta[col] = np.nan
 
-                # Reorder columns to match sample_table
                 pr_meta = pr_meta.reindex(columns=sample_table_cols)
 
                 pr_counts_collected.append(pr_counts)
                 pr_meta_collected.append(pr_meta)
 
-        # Combine original samples with pseudoreplicates
+        # Combine with original samples
+        # If samples exist, append the pseudoreplicates
         if len(pb_result.pb_counts) > 0:
             counts = pd.concat([pb_result.pb_counts] + pr_counts_collected, axis=0, ignore_index=True)
             sample_table = pd.concat([pb_result.sample_table] + pr_meta_collected, axis=0, ignore_index=True)
+        # If they don't, just concatenate them
         else:
-            # No original samples, only pseudoreplicates
             counts = pd.concat(pr_counts_collected, axis=0, ignore_index=True)
             sample_table = pd.concat(pr_meta_collected, axis=0, ignore_index=True)
 
-        # String indices for compatibility
         counts.index = counts.index.astype(str)
         sample_table.index = sample_table.index.astype(str)
 
@@ -604,6 +566,14 @@ def _run_de_pseudoreplicates(
         alpha=alpha,
     )
 
+    # Inform the user about the cell usage
+    usage_counts = np.array(list(cell_usage_tracker.values()))
+    logger.info(
+        f"Cell reusage per repetition: mean={usage_counts.mean() / n_repetitions:.2f}, max={usage_counts.max() / n_repetitions:.2f}\n"
+        f"Unused cells across all repetitions: {np.sum(usage_counts == 0)}/{len(cell_usage_tracker)}"
+    )
+
+    # Inform the user about the de results
     logger.info(
         f"DE complete with pseudoreplicates: {n_genes_tested} genes tested, "
         f"{n_genes_significant} significant in >= {min_list_overlap * 100:.0f}% of {n_repetitions} repetitions"
@@ -620,3 +590,210 @@ def _run_de_pseudoreplicates(
         n_repetitions=n_repetitions,
         repetition_results=repetition_results,
     )
+
+
+def _build_cell_pool_cache(
+    pb_result: PseudobulkResult,
+    rng: np.random.Generator,
+    shuffle: bool = False,
+) -> dict[str, list[np.ndarray]]:
+    """Build cell pools for each condition."""
+    # Initialize the cache
+    cache = {"query": [], "reference": []}
+
+    # Get the relevant attributes from the PseudobulkResult class
+    # list(grouped.grouper.names) gets the names of the groupby keys in order
+    # e.g. ['psbulk_condition', 'animal_id', 'experiment']
+    grouped = pb_result.grouped
+    group_key_internal = pb_result.group_key_internal
+    groupby_cols = list(grouped.grouper.names)
+
+    # The grouped df allows to iterate over each sample and get the corresponding
+    # strata the group is associated with, e.g. ('query', 'animal_1', 'experiment_3')
+    # and the associated dataframe with the cells that belong to that sample (the group_df)
+    for name, group_df in grouped:
+        # Extract condition from group name
+        # If there are covariates, this is a tuple
+        if isinstance(name, tuple):
+            # Find the index of the condition in the groupby columns and extract it from the name tuple
+            # It is in all cases the first entry, if not something would be very wrong, but coding this
+            # but it's good to not hardcode it
+            condition_index = groupby_cols.index(group_key_internal)
+            condition = name[condition_index]
+        # If the condition is collapsed (no sample could be found, all cells are used)
+        # this is just a string, take it as is
+        else:
+            condition = name
+
+        # Get cell labels (name of a cell, not position)
+        cell_indices = group_df.index.to_numpy()
+
+        # Shuffle cells within this sample if requested
+        if shuffle:
+            rng.shuffle(cell_indices)
+
+        # I store both the size of the sample as well as the actual cell indices here
+        cache[condition].append((len(cell_indices), cell_indices))
+
+    # Shuffle sample order if requested for diversity across iterations
+    # Not needed for the greedy sampling strategy, but maybe in the future there could be
+    # a more efficient round-robin approach that just keeps track of a global sample pointer
+    # and a local cell pointer. In that case one would need shuffling of samples and cells
+    # in between repetitions.
+    if shuffle:
+        for condition in cache:
+            rng.shuffle(cache[condition])
+
+    return cache
+
+
+def _generate_pseudoreplicate(
+    adata: ad.AnnData,
+    condition: str,
+    cell_pool_cache: dict,
+    cell_usage_tracker: dict,
+    layer: str,
+    layer_aggregation: Literal["sum", "mean"],
+    continuous_covariates: Sequence[str],
+    continuous_aggregation: Literal["mean", "sum", "median"] | Callable,
+    resampling_fraction: float,
+    groupby_cols: list[str],
+    grouped_obs: pd.DataFrame,
+    rng: np.random.Generator,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Generate pseudoreplicate using greedy cell usage minimization.
+
+    Strategy:
+    1. Select sample with minimum total cell usage
+    2. Within that sample, randomly select from least-used cells to ensure diversity
+
+    The cell_usage_tracker persists across all repetitions and pseudoreplicates,
+    ensuring maximum independence across the entire DE analysis.
+    """
+    # This will generate a list of arrays containing cell indices. One array for each sample
+    condition_samples = cell_pool_cache[condition]
+
+    # Compute usage of each sample. The sample size is already pre-defined. Move it over to
+    # The sample_usage_scores
+    sample_usage_scores = []
+    for idx, (sample_size, cell_indices) in enumerate(condition_samples):
+        total_usage = sum(cell_usage_tracker.get(cell_idx, 0) for cell_idx in cell_indices)
+        usage_rate = round(total_usage / sample_size, 2)
+        sample_usage_scores.append((usage_rate, sample_size, idx))
+    logger.debug(sample_usage_scores)
+
+    # Select least-used sample. Sort by usage_rate first (x[0]) and if there is a tie,
+    # sort by size in descending order (-x[1]). The reason for that is that we don't want
+    # to generate a pseudoreplicate from an already small sample
+    sample_usage_scores.sort(key=lambda x: (x[0], -x[1]))
+    selected_sample_idx = sample_usage_scores[0][2]
+
+    # Compute how many cells need to be sampled using resampling_fraction
+    sample_size, cell_indices = condition_samples[selected_sample_idx]
+    n_sample = max(1, int(sample_size * resampling_fraction))
+
+    # Now within a sample, we also only want to select the least used cells.
+    # So, get an array of how many times a cell has been used, and get the min of that
+    cell_usage_counts = np.array([cell_usage_tracker.get(idx, 0) for idx in cell_indices])
+    min_usage = cell_usage_counts.min()
+
+    # Find all cells with minimum usage
+    min_usage_mask = cell_usage_counts == min_usage
+    min_usage_positions = np.where(min_usage_mask)[0]
+
+    # Randomly sample from the least used cells. Two things can happen. Either there are enough
+    # cells that are least used to sample from, then just sample randomly from those. Or, there
+    # are not enough least used cells, then take all of the available ones, and sample the rest from
+    # the next tier of usage. It should always be possible to fill up with enough cells from the next
+    # usage tier, due to the fact that we work with fractions and the size of each pseudoreplicate from
+    # a sample always stays the same, so it can't be that we would need to move up another tier of usage
+    if len(min_usage_positions) >= n_sample:
+        # Plenty of least used cells available, sample randomly
+        sampled_positions = rng.choice(min_usage_positions, size=n_sample, replace=False)
+    else:
+        # Not enough least-used cells so take all and fill from next tier
+        sampled_positions = list(min_usage_positions)
+        remaining = n_sample - len(sampled_positions)
+
+        # Get cells with next-lowest usage
+        next_tier_mask = cell_usage_counts == (min_usage + 1)
+        next_tier_positions = np.where(next_tier_mask)[0]
+
+        additional = rng.choice(next_tier_positions, size=remaining, replace=False)
+        sampled_positions.extend(additional)
+
+        sampled_positions = np.array(sampled_positions)
+
+    sampled_cell_indices = cell_indices[sampled_positions]
+
+    # Update usage tracker
+    for cell_idx in sampled_cell_indices:
+        cell_usage_tracker[cell_idx] = cell_usage_tracker.get(cell_idx, 0) + 1
+
+    # Aggregate expression and metadata
+    return _aggregate_pseudoreplicate(
+        adata=adata,
+        sampled_cell_indices=sampled_cell_indices,
+        groupby_cols=groupby_cols,
+        layer=layer,
+        layer_aggregation=layer_aggregation,
+        continuous_covariates=continuous_covariates,
+        continuous_aggregation=continuous_aggregation,
+        grouped_obs=grouped_obs,
+    )
+
+
+def _aggregate_pseudoreplicate(
+    adata: ad.AnnData,
+    sampled_cell_indices: np.ndarray,
+    groupby_cols: list[str],
+    layer: str,
+    layer_aggregation: Literal["sum", "mean"],
+    continuous_covariates: Sequence[str],
+    continuous_aggregation: Literal["mean", "sum", "median"] | Callable,
+    grouped_obs: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Aggregate expression and metadata for sampled cells.
+
+    Parameters
+    ----------
+    adata
+        AnnData object containing expression data
+    sampled_cell_indices
+        Cell indices (labels) to aggregate
+    groupby_cols
+        Columns to group by (includes internal psbulk_condition)
+    layer
+        Layer to aggregate from
+    layer_aggregation
+        Aggregation method for expression
+    continuous_covariates
+        Continuous covariates to aggregate
+    continuous_aggregation
+        Aggregation method for covariates
+    grouped_obs
+        The grouped.obj DataFrame that contains internal columns like psbulk_condition
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame]
+        (aggregated_counts, aggregated_metadata)
+    """
+    # The sampled cells must be contained in one specific group
+    # So subset to the cells of the pseudoreplicate, this yields a dataframe and
+    # re-group. That way the _aggregate_counts can be used, because it operates per group on a grouped df
+    # In this case, there is just one group
+    source_obs = grouped_obs.loc[sampled_cell_indices]
+    sampled_grouped = source_obs.groupby(groupby_cols, observed=True, sort=False)
+
+    # Aggregate counts
+    pr_counts = _aggregate_counts(adata, sampled_grouped, layer=layer, layer_aggregation=layer_aggregation)
+
+    # Aggregate metadata
+    if continuous_covariates:
+        agg_func = _get_aggregation_function(continuous_aggregation)
+        pr_meta = sampled_grouped[continuous_covariates].agg(agg_func).reset_index()
+    else:
+        pr_meta = sampled_grouped.first().reset_index()[groupby_cols]
+
+    return pr_counts, pr_meta
