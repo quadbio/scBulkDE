@@ -576,17 +576,13 @@ def _run_de_pseudoreplicates(
 
     # Inform the user about the cell usage
     usage_counts = np.array(list(cell_usage_tracker.values()))
-    logger.info(
+    logger.debug(
         f"Cell reusage per repetition: mean={usage_counts.mean() / n_repetitions:.2f}, max={usage_counts.max() / n_repetitions:.2f}\n"
         f"Unused cells across all repetitions: {np.sum(usage_counts == 0)}/{len(cell_usage_tracker)}"
     )
 
     # Inform the user about the de results
-    logger.info(
-        logger.info(
-            f"DE complete with pseudoreplicates: {len(results)} genes tested, {n_sig} significant (padj < {alpha})"
-        )
-    )
+    logger.info(f"DE complete with pseudoreplicates: {len(results)} genes tested, {n_sig} significant (padj < {alpha})")
 
     return DEResult(
         results=results,
