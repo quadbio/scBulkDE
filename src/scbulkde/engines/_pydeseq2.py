@@ -93,11 +93,16 @@ class PyDESeq2Engine(DEEngineBase):
             ) from e
 
         try:
+            # Setting cooks_filter to False for now so that there are floats for all pvalues
+            # because if there is a NA, the multipletests will return NA for all. This can be
+            # adjusted later.
+            # See: https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#pvaluesNA
             ds = DeseqStats(
                 dds,
                 contrast=["psbulk_condition", "query", "reference"],
                 alpha=alpha,
                 independent_filter=False,
+                cooks_filter=False,
                 quiet=quiet,
                 n_cpus=n_cpus,
             )
