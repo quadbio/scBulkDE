@@ -107,4 +107,4 @@ class AnovaEngine(DEEngineBase):
             return results.loc[:, ["pvalue", "stat", "padj", "log2FoldChange", "stat_sign"]]
 
         except Exception as e:
-            raise RuntimeError("ANOVA failed") from e
+            raise RuntimeError(f"ANOVA failed: {e}") from e
