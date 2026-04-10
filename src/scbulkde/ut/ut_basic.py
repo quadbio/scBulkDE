@@ -18,8 +18,6 @@ if TYPE_CHECKING:
     import anndata as ad
     from numpy.typing import NDArray
 
-# =================== Helper functions for pp ================= #
-
 
 def _prepare_internal_groups(
     adata: ad.AnnData,
@@ -391,9 +389,6 @@ def _build_full_rank_design(
     return design_formula, mm, design_factors_categorical, design_factors_continuous
 
 
-# ================= Helper functions for tl ================= #
-
-
 def _compute_required_samples(
     grouped: pd.api.typing.DataFrameGroupBy,
     min_samples: int,
@@ -406,9 +401,6 @@ def _compute_required_samples(
                 counts[m] += 1
 
     return {c: max(0, min_samples - counts.get(c, 0)) for c in ["query", "reference"]}
-
-
-# ==================== Helper functions for pp and tl ================= #
 
 
 @performance(logger=logger)
@@ -476,7 +468,6 @@ def _aggregate_counts(
     return df
 
 
-# =================== Helper functions for rank_genes_groups ================= #
 def _get_X_and_var_names(
     adata: ad.AnnData,
     *,
