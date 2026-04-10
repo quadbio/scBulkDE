@@ -3,7 +3,7 @@
 [![Tests][badge-tests]][tests]
 [![Documentation][badge-docs]][documentation]
 
-[badge-tests]: https://img.shields.io/github/actions/workflow/status/AdnanAbouelela/scBulkDE/test.yaml?branch=main
+[badge-tests]: https://img.shields.io/github/actions/workflow/status/quadbio/scBulkDE/test.yaml?branch=main
 [badge-docs]: https://img.shields.io/readthedocs/scBulkDE
 
 Performing differential testing on pseudobulked single-cell data
