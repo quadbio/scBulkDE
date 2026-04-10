@@ -47,10 +47,122 @@ def rank_genes_groups(
     de_kwargs,
 ) -> AnnData | None:
     """
-    Pseudobulk-backed replacement for scanpy.tl.rank_genes_groups.
+    Rank genes for characterizing groups using pseudobulk differential expression.
 
-    Implements the same logic and output structure as scanpy.tl.rank_genes_groups, but reduces rigorousity in order
-    to avoid importing scanpy itself.
+    This is a drop-in replacement for scanpy.tl.rank_genes_groups that uses
+    pseudobulk aggregation followed by differential expression testing instead
+    of single-cell statistical tests. This approach is more statistically rigorous
+    for single-cell RNA-seq data with biological replicates.
+
+    Parameters
+    ----------
+    adata
+        Annotated data matrix.
+    groupby
+        The key of the observations grouping to consider (e.g., 'cell_type', 'cluster').
+    mask_var
+        Select subset of genes to use in statistical tests. Can be a boolean array
+        or a string key from `adata.var`.
+    use_raw
+        Use raw attribute of adata if present. The default behavior (`None`) is to
+        use raw if present. Set to `False` to force use of normalized data.
+    groups
+        Subset of groups, e.g. `['g1', 'g2', 'g3']`, to which comparison shall be
+        restricted, or `'all'` (default), for all groups. Note that if `reference='rest'`
+        all groups will still be used as the reference, not just those specified in groups.
+    reference
+        If `'rest'`, compare each group to the union of the rest of the groups.
+        If a group identifier, compare with respect to this specific group.
+        When a specific reference is provided, it will not be tested against itself.
+    n_genes
+        The number of genes that appear in the returned tables. Defaults to all genes.
+    rankby_abs
+        Rank genes by the absolute value of the log fold change, not by the log fold
+        change itself. The returned scores are never the absolute values.
+    pts
+        Compute the fraction of cells expressing the genes in each group.
+    key_added
+        The key in `adata.uns` where information is saved to. Defaults to 'rank_genes_groups'.
+    layer
+        Key from `adata.layers` whose value will be used to perform tests on.
+        Cannot be used together with `use_raw=True`.
+    copy
+        Whether to copy adata or modify it inplace.
+    de_kwargs
+        Keyword arguments passed to the underlying `de()` function. Must include
+        pseudobulk-specific parameters such as `replicate_key`. Common parameters include:
+
+        - `replicate_key` : str
+            Column in `adata.obs` defining biological replicates (required for pseudobulk).
+        - `min_cells` : int, default=50
+            Minimum number of cells required per pseudobulk sample.
+        - `min_fraction` : float, default=0.2
+            Minimum fraction of cells per pseudobulk sample.
+        - `min_coverage` : float, default=0.75
+            Minimum coverage required per condition.
+        - `categorical_covariates` : Sequence[str], optional
+            Categorical covariates to include in the design.
+        - `continuous_covariates` : Sequence[str], optional
+            Continuous covariates to include in the design.
+        - `engine` : str, default='anova'
+            Statistical engine for DE testing ('anova' or 'pydeseq2').
+        - `fallback_strategy` : {'pseudoreplicates', 'single_cell', None}, default='pseudoreplicates'
+            Strategy when insufficient biological replicates exist.
+        - `min_samples` : int, default=3
+            Minimum number of pseudobulk samples required per condition for direct testing.
+
+    Returns
+    -------
+    AnnData | None
+        Returns `adata` if `copy=True`, otherwise returns `None` and modifies `adata` inplace.
+        Results are stored in `adata.uns[key_added]` with the following structure:
+
+        - `names` : numpy.recarray
+            Structured array with top gene names for each group.
+        - `scores` : numpy.recarray
+            Structured array with test statistics for each group.
+        - `logfoldchanges` : numpy.recarray
+            Structured array with log2 fold changes for each group.
+        - `pvals` : numpy.recarray
+            Structured array with p-values for each group.
+        - `pvals_adj` : numpy.recarray
+            Structured array with adjusted p-values (FDR) for each group.
+        - `pts` : pd.DataFrame (if `pts=True`)
+            Fraction of cells expressing each gene in each group.
+        - `pts_rest` : pd.DataFrame (if `pts=True` and `reference='rest'`)
+            Fraction of cells expressing each gene in the rest of the cells.
+        - `params` : dict
+            Dictionary containing parameters used for the analysis.
+
+    Notes
+    -----
+    Unlike scanpy.tl.rank_genes_groups which uses single-cell statistical tests
+    (t-test, Wilcoxon, etc.), this implementation:
+
+    1. Aggregates cells into pseudobulk samples based on biological replicates
+    2. Performs differential expression testing on pseudobulk data
+    3. Properly accounts for sample-level variation and biological replicates
+
+    This approach is more statistically appropriate for single-cell RNA-seq data
+    and reduces false discovery rates [Squair2021]_.
+
+    When insufficient biological replicates are available, the function can fall back
+    to pseudoreplicate generation or single-cell testing (controlled by `de_kwargs`).
+
+    References
+    ----------
+    .. [Squair2021] Squair, J.W., et al. (2021)
+       "Confronting false discoveries in single-cell differential expression."
+       Nature Communications 12, 5692.
+
+    See Also
+    --------
+    de : Core differential expression function
+    pp.pseudobulk : Pseudobulk aggregation without DE testing
+
+    Examples
+    --------
+    n.a.
     """
     # Adhere to:
     # https://github.com/scverse/scanpy/blob/cf8b46dea735c35a629abfaa2e1bab9047281e34/src/scanpy/tools/_rank_genes_groups.py#L626C1-L630C30
@@ -68,6 +180,7 @@ def rank_genes_groups(
     # If groups is "all", we keep it as is for later processing
     if groups == "all":
         groups_order = "all"
+        groups_to_test = "all"  # Will be resolved after _select_groups
     # Check that groups is a sequence and not just a single string or int
     elif isinstance(groups, str | int):
         msg = "Specify a sequence of groups"
@@ -75,11 +188,17 @@ def rank_genes_groups(
     else:
         groups_order = list(groups)
         # If groups are integers, convert to strings
-        if isinstance(groups_order[0], int):
+        if len(groups_order) > 0 and isinstance(groups_order[0], int):
             groups_order = [str(n) for n in groups_order]
-        # Ensure reference is included in groups_order
+
+        # Store which groups to actually test (don't test reference against itself)
+        groups_to_test = groups_order.copy()
+
+        # Ensure reference is included in groups_order for _select_groups
+        # (needed for creating masks) but don't test it against itself
         if reference != "rest" and reference not in set(groups_order):
             groups_order += [reference]
+
     # Check that reference is valid
     if reference != "rest" and reference not in adata.obs[groupby].cat.categories:
         cats = adata.obs[groupby].cat.categories.tolist()
@@ -123,6 +242,19 @@ def rank_genes_groups(
     adata.obs[groupby] = adata.obs[groupby].astype("category")
     groups_order, groups_masks_obs = _select_groups(adata, groups_order, groupby)
 
+    # Now resolve groups_to_test if it was "all"
+    if groups_to_test == "all":
+        if reference == "rest":
+            # Test all groups against rest
+            groups_to_test = groups_order
+        else:
+            # Test all groups except the reference (don't test reference against itself)
+            groups_to_test = [g for g in groups_order if g != reference]
+    else:
+        # groups_to_test already set above, but ensure reference is excluded if specific
+        if reference != "rest":
+            groups_to_test = [g for g in groups_to_test if g != reference]
+
     # Select number of genes to be returned
     n_vars = X.shape[1]
     if n_genes is None or n_genes > n_vars:
@@ -130,10 +262,10 @@ def rank_genes_groups(
     else:
         n_genes_user = n_genes
 
-    # Do the actual DE
+    # Do the actual DE - only test groups_to_test, not the reference
     stats = None
 
-    for group in tqdm(groups_order):
+    for group in tqdm(groups_to_test):
         de_res = de(
             adata,
             group_key=groupby,
