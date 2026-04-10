@@ -34,8 +34,8 @@ dependencies = [
 ]
 # https://docs.pypi.org/project_metadata/#project-urls
 urls.Documentation = "https://scBulkDE.readthedocs.io/"
-urls.Homepage = "https://github.com/AdnanAbouelela/scBulkDE"
-urls.Source = "https://github.com/AdnanAbouelela/scBulkDE"
+urls.Homepage = "https://github.com/quadbio/scBulkDE"
+urls.Source = "https://github.com/quadbio/scBulkDE"
 
 [dependency-groups]
 dev = [
