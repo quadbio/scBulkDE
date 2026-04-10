@@ -2,9 +2,11 @@
 
 [![Tests][badge-tests]][tests]
 [![Documentation][badge-docs]][documentation]
+[![PyPI][badge-pypi]][pypi]
 
 [badge-tests]: https://img.shields.io/github/actions/workflow/status/quadbio/scBulkDE/test.yaml?branch=main
 [badge-docs]: https://img.shields.io/readthedocs/scBulkDE
+[badge-pypi]: https://img.shields.io/pypi/v/scbulkde.svg
 
 Performing differential testing on pseudobulked single-cell data
 
