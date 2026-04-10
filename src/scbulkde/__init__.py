@@ -2,11 +2,10 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-from scBulkDE.src.scbulkde.ut.containers import DEResult, PseudobulkResult
-
 from scbulkde import pp, tl
 from scbulkde.pp import pseudobulk
 from scbulkde.tl import de, rank_genes_groups
+from scbulkde.ut.containers import DEResult, PseudobulkResult
 
 try:
     __version__ = version("scbulkde")
