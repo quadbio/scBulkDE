@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 import scipy.sparse as sp
 from anndata import AnnData
 
@@ -408,3 +409,859 @@ class _GeneratePseudoreplicate:
         }
         cell_usage = dict.fromkeys(range(5 * n_cells_per_sample), 0)
         return cell_pool, cell_usage
+
+
+class TestDEFunction:
+    """Integration tests for the main de() entry point.
+
+    These tests validate the routing logic and pipeline behavior by mocking
+    the DE engine to isolate the tl_basic orchestration from statistical computation.
+    """
+
+    @pytest.fixture
+    def mock_engine(self, monkeypatch):
+        """Mock the DE engine to return deterministic results."""
+
+        class MockEngine:
+            name = "mock"
+
+            def run(
+                self,
+                counts,
+                metadata,
+                design_matrix,
+                design_formula,
+                alpha,
+                correction_method,
+                gene_names=None,
+                **kwargs,
+            ):
+                # Determine gene names from input
+                if gene_names is not None:
+                    genes = gene_names
+                elif hasattr(counts, "columns"):
+                    genes = counts.columns
+                else:
+                    raise ValueError("Cannot determine gene names")
+
+                n_genes = len(genes)
+                rng = np.random.RandomState(42)
+
+                return pd.DataFrame(
+                    {
+                        "pvalue": rng.uniform(0, 0.1, n_genes),
+                        "padj": rng.uniform(0, 0.1, n_genes),
+                        "stat": rng.uniform(1, 5, n_genes),
+                        "log2FoldChange": rng.uniform(-2, 2, n_genes),
+                        "stat_sign": rng.uniform(1, 5, n_genes),
+                    },
+                    index=genes,
+                )
+
+        def mock_get_engine(name):
+            return MockEngine()
+
+        monkeypatch.setattr("scbulkde.tl.tl_basic.get_engine_instance", mock_get_engine)
+        return MockEngine()
+
+    def test_direct_de_with_sufficient_samples(self, make_adata, mock_engine):
+        """With ≥3 samples per condition, should use direct DE without fallback."""
+        from scbulkde.tl.tl_basic import de
+
+        # Create data with 3+ samples per condition (90 cells, 3 donors each condition)
+        adata = make_adata(
+            n_cells=180,
+            n_genes=50,
+            groups=["A", "B"],
+            group_counts=[90, 90],
+            replicate_key="donor",
+            replicate_values=(["d1"] * 30 + ["d2"] * 30 + ["d3"] * 30) * 2,
+        )
+
+        result = de(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key="donor",
+            min_samples=3,
+            min_cells=10,
+            engine="mock",
+        )
+
+        # Validate direct DE was used
+        assert result.used_pseudoreplicates is False
+        assert result.used_single_cell is False
+        assert result.n_repetitions == 1
+        assert result.engine == "mock"
+        assert result.fallback_used is None
+
+        # Validate result structure
+        assert "pvalue" in result.results.columns
+        assert "padj" in result.results.columns
+        assert "log2FoldChange" in result.results.columns
+        assert len(result.results) == 50  # n_genes
+
+    def test_pseudoreplicate_fallback_insufficient_samples(self, make_adata, mock_engine):
+        """With <3 samples per condition, should fall back to pseudoreplicates."""
+        from scbulkde.tl.tl_basic import de
+
+        # Create data with only 1 sample per condition
+        adata = make_adata(
+            n_cells=100,
+            n_genes=50,
+            groups=["A", "B"],
+            group_counts=[50, 50],
+            replicate_key="donor",
+            replicate_values=["d1"] * 50 + ["d2"] * 50,
+        )
+
+        result = de(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key="donor",
+            min_samples=3,
+            fallback_strategy="pseudoreplicates",
+            n_repetitions=2,
+            resampling_fraction=0.3,
+            min_cells=10,
+        )
+
+        # Validate pseudoreplicate fallback was used
+        assert result.used_pseudoreplicates is True
+        assert result.used_single_cell is False
+        assert result.n_repetitions == 2
+        assert result.fallback_used == "pseudoreplicates"
+
+        # Validate repetition results exist
+        assert result.repetition_results is not None
+        assert len(result.repetition_results) == 2
+
+        # Each repetition should have results for all genes
+        for _, rep_results in result.repetition_results.items():
+            assert len(rep_results) == 50
+
+    def test_single_cell_fallback(self, make_adata, mock_engine):
+        """With fallback_strategy='single_cell', should run at single-cell level."""
+        from scbulkde.tl.tl_basic import de
+
+        adata = make_adata(
+            n_cells=100,
+            n_genes=50,
+            groups=["A", "B"],
+            group_counts=[50, 50],
+            replicate_key="donor",
+            replicate_values=["d1"] * 50 + ["d2"] * 50,
+        )
+
+        result = de(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key="donor",
+            min_samples=3,
+            fallback_strategy="single_cell",
+        )
+
+        # Validate single-cell fallback was used
+        assert result.used_single_cell is True
+        assert result.used_pseudoreplicates is False
+        assert result.n_repetitions == 1
+        assert result.fallback_used == "single_cell"
+
+        # Validate results
+        assert len(result.results) == 50
+
+    def test_raises_error_no_fallback_strategy(self, make_adata):
+        """Should raise ValueError when insufficient samples and fallback_strategy=None."""
+        from scbulkde.tl.tl_basic import de
+
+        adata = make_adata(
+            n_cells=100,
+            n_genes=50,
+            groups=["A", "B"],
+            group_counts=[50, 50],
+            replicate_key="donor",
+            replicate_values=["d1"] * 50 + ["d2"] * 50,
+        )
+
+        with pytest.raises(ValueError, match="Insufficient samples"):
+            de(
+                adata,
+                group_key="cell_type",
+                query="A",
+                reference="B",
+                replicate_key="donor",
+                min_samples=3,
+                fallback_strategy=None,
+            )
+
+    def test_accepts_pseudobulk_result_input(self, make_adata, mock_engine):
+        """Should accept pre-computed PseudobulkResult as input."""
+        from scbulkde.pp import pseudobulk
+        from scbulkde.tl.tl_basic import de
+
+        adata = make_adata(
+            n_cells=180,
+            n_genes=50,
+            groups=["A", "B"],
+            group_counts=[90, 90],
+            replicate_key="donor",
+            replicate_values=(["d1"] * 30 + ["d2"] * 30 + ["d3"] * 30) * 2,
+        )
+
+        # Pre-compute pseudobulk
+        pb_result = pseudobulk(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key="donor",
+            min_cells=10,
+        )
+
+        # Pass PseudobulkResult to de()
+        result = de(pb_result, min_samples=3)
+
+        # Validate result matches the input
+        assert result.query == pb_result.query
+        assert result.reference == pb_result.reference
+        assert result.used_pseudoreplicates is False
+
+    def test_uses_alpha_fallback_when_provided(self, make_adata, mock_engine):
+        """Should use alpha_fallback for fallback strategies when specified."""
+        from scbulkde.tl.tl_basic import de
+
+        adata = make_adata(
+            n_cells=100,
+            n_genes=50,
+            groups=["A", "B"],
+            group_counts=[50, 50],
+            replicate_key="donor",
+            replicate_values=["d1"] * 50 + ["d2"] * 50,
+        )
+
+        # Test with alpha_fallback different from alpha
+        result = de(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key="donor",
+            min_samples=3,
+            alpha=0.05,
+            alpha_fallback=0.01,  # More stringent for fallback
+            fallback_strategy="single_cell",
+        )
+
+        # Should complete without error
+        assert result.used_single_cell is True
+
+    def test_no_strata_triggers_fallback(self, make_adata, mock_engine):
+        """When no replicate_key provided, should use fallback strategies."""
+        from scbulkde.tl.tl_basic import de
+
+        adata = make_adata(
+            n_cells=100,
+            n_genes=50,
+            groups=["A", "B"],
+            group_counts=[50, 50],
+        )
+
+        # No replicate_key means no strata, which means 0 samples
+        result = de(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key=None,  # No strata
+            min_samples=3,
+            fallback_strategy="single_cell",
+        )
+
+        # Should use single-cell fallback
+        assert result.used_single_cell is True
+
+
+class TestRunDESingleCell:
+    """Tests for single-cell DE execution logic."""
+
+    def create_mock_pb_result(self, make_adata, sparse=False, layer_name=None):
+        """Helper to create a minimal PseudobulkResult for testing."""
+        from scbulkde.pp import pseudobulk
+
+        adata = make_adata(
+            n_cells=80,
+            n_genes=30,
+            groups=["A", "B"],
+            group_counts=[40, 40],
+            sparse=sparse,
+            layer_name=layer_name,
+        )
+
+        return pseudobulk(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key=None,  # No replicates = collapsed case
+            layer=layer_name,
+        )
+
+    def test_handles_sparse_csr_matrix(self, make_adata):
+        """Should convert sparse CSR matrix to dense array before engine."""
+        from scbulkde.tl.tl_basic import _run_de_single_cell
+
+        counts_received = []
+
+        class MockEngine:
+            def run(
+                self,
+                counts,
+                metadata,
+                design_matrix,
+                design_formula,
+                alpha,
+                correction_method,
+                gene_names=None,
+                **kwargs,
+            ):
+                # Capture what was passed to engine
+                counts_received.append(counts)
+
+                # Verify counts is dense numpy array, not sparse
+                assert isinstance(counts, np.ndarray)
+                assert not sp.issparse(counts)
+
+                return pd.DataFrame(
+                    {
+                        "pvalue": [0.01] * len(gene_names),
+                        "padj": [0.05] * len(gene_names),
+                        "stat": [2.0] * len(gene_names),
+                        "log2FoldChange": [1.0] * len(gene_names),
+                        "stat_sign": [2.0] * len(gene_names),
+                    },
+                    index=gene_names,
+                )
+
+        pb_result = self.create_mock_pb_result(make_adata, sparse=True)
+
+        # Verify input is actually sparse
+        assert sp.issparse(pb_result.adata_sub.X)
+
+        result = _run_de_single_cell(
+            pb_result=pb_result,
+            alpha=0.05,
+            correction_method="fdr_bh",
+            de_engine=MockEngine(),
+            engine_name="mock",
+            engine_kwargs={},
+        )
+
+        # Validate engine was called
+        assert len(counts_received) == 1
+
+        # Validate result structure
+        assert result.used_single_cell is True
+        assert result.used_pseudoreplicates is False
+        assert len(result.results) == 30  # n_genes
+
+    def test_handles_dense_matrix(self, make_adata):
+        """Should handle dense matrices correctly."""
+        from scbulkde.tl.tl_basic import _run_de_single_cell
+
+        class MockEngine:
+            def run(
+                self,
+                counts,
+                metadata,
+                design_matrix,
+                design_formula,
+                alpha,
+                correction_method,
+                gene_names=None,
+                **kwargs,
+            ):
+                assert isinstance(counts, np.ndarray)
+                assert not sp.issparse(counts)
+
+                return pd.DataFrame(
+                    {
+                        "pvalue": [0.01] * len(gene_names),
+                        "padj": [0.05] * len(gene_names),
+                        "stat": [2.0] * len(gene_names),
+                        "log2FoldChange": [1.0] * len(gene_names),
+                        "stat_sign": [2.0] * len(gene_names),
+                    },
+                    index=gene_names,
+                )
+
+        pb_result = self.create_mock_pb_result(make_adata, sparse=False)
+
+        result = _run_de_single_cell(
+            pb_result=pb_result,
+            alpha=0.05,
+            correction_method="fdr_bh",
+            de_engine=MockEngine(),
+            engine_name="mock",
+            engine_kwargs={},
+        )
+
+        assert result.used_single_cell is True
+
+    def test_uses_layer_when_specified(self, make_adata):
+        """Should extract expression from specified layer."""
+        from scbulkde.tl.tl_basic import _run_de_single_cell
+
+        layer_used = []
+
+        class MockEngine:
+            def run(
+                self,
+                counts,
+                metadata,
+                design_matrix,
+                design_formula,
+                alpha,
+                correction_method,
+                gene_names=None,
+                **kwargs,
+            ):
+                # Store counts to verify layer was used
+                layer_used.append(counts)
+
+                return pd.DataFrame(
+                    {
+                        "pvalue": [0.01] * len(gene_names),
+                        "padj": [0.05] * len(gene_names),
+                        "stat": [2.0] * len(gene_names),
+                        "log2FoldChange": [1.0] * len(gene_names),
+                        "stat_sign": [2.0] * len(gene_names),
+                    },
+                    index=gene_names,
+                )
+
+        pb_result = self.create_mock_pb_result(make_adata, layer_name="test_layer")
+
+        result = _run_de_single_cell(
+            pb_result=pb_result,
+            alpha=0.05,
+            correction_method="fdr_bh",
+            de_engine=MockEngine(),
+            engine_name="mock",
+            engine_kwargs={},
+        )
+
+        # Validate layer was accessed
+        assert len(layer_used) == 1
+        assert result.used_single_cell is True
+
+    def test_creates_simple_design_formula(self, make_adata):
+        """Should create a simple design formula for single-cell DE."""
+        from scbulkde.tl.tl_basic import _run_de_single_cell
+
+        design_formula_received = []
+
+        class MockEngine:
+            def run(
+                self,
+                counts,
+                metadata,
+                design_matrix,
+                design_formula,
+                alpha,
+                correction_method,
+                gene_names=None,
+                **kwargs,
+            ):
+                design_formula_received.append(design_formula)
+
+                return pd.DataFrame(
+                    {
+                        "pvalue": [0.01] * len(gene_names),
+                        "padj": [0.05] * len(gene_names),
+                        "stat": [2.0] * len(gene_names),
+                        "log2FoldChange": [1.0] * len(gene_names),
+                        "stat_sign": [2.0] * len(gene_names),
+                    },
+                    index=gene_names,
+                )
+
+        pb_result = self.create_mock_pb_result(make_adata)
+
+        _ = _run_de_single_cell(
+            pb_result=pb_result,
+            alpha=0.05,
+            correction_method="fdr_bh",
+            de_engine=MockEngine(),
+            engine_name="mock",
+            engine_kwargs={},
+        )
+
+        # Verify simple design formula was created
+        assert len(design_formula_received) == 1
+        assert "psbulk_condition" in design_formula_received[0]
+        assert "reference" in design_formula_received[0]
+
+
+class TestRunDEPseudoreplicates:
+    """Tests for pseudoreplicate DE execution and aggregation."""
+
+    def test_runs_multiple_repetitions(self, make_adata):
+        """Should execute DE n_repetitions times."""
+        from scbulkde.pp import pseudobulk
+        from scbulkde.tl.tl_basic import _run_de_pseudoreplicates
+
+        call_count = []
+
+        class MockEngine:
+            def run(self, counts, metadata, design_matrix, design_formula, alpha, correction_method, **kwargs):
+                call_count.append(1)
+                genes = counts.columns
+                return pd.DataFrame(
+                    {
+                        "pvalue": np.full(len(genes), 0.01),
+                        "padj": np.full(len(genes), 0.05),
+                        "stat": np.full(len(genes), 2.0),
+                        "log2FoldChange": np.full(len(genes), 1.0),
+                        "stat_sign": np.full(len(genes), 2.0),
+                    },
+                    index=genes,
+                )
+
+        adata = make_adata(
+            n_cells=120,
+            n_genes=20,
+            groups=["A", "B"],
+            group_counts=[60, 60],
+            replicate_key="donor",
+            replicate_values=(["d1"] * 30 + ["d2"] * 30) * 2,
+        )
+
+        pb_result = pseudobulk(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key="donor",
+            min_cells=10,
+        )
+
+        n_reps = 3
+        result = _run_de_pseudoreplicates(
+            pb_result=pb_result,
+            alpha=0.05,
+            correction_method="fdr_bh",
+            de_engine=MockEngine(),
+            required_samples={"query": 1, "reference": 1},
+            n_repetitions=n_reps,
+            resampling_fraction=0.3,
+            rng=np.random.default_rng(42),
+            engine_name="mock",
+            engine_kwargs={},
+        )
+
+        # Should call engine exactly n_repetitions times
+        assert len(call_count) == n_reps
+
+        # Should store per-repetition results
+        assert len(result.repetition_results) == n_reps
+
+        # Result metadata should reflect pseudoreplicate usage
+        assert result.used_pseudoreplicates is True
+        assert result.n_repetitions == n_reps
+
+    def test_aggregates_results_across_repetitions(self, make_adata):
+        """Should average results across repetitions."""
+        from scbulkde.pp import pseudobulk
+        from scbulkde.tl.tl_basic import _run_de_pseudoreplicates
+
+        class MockEngine:
+            def run(self, counts, metadata, design_matrix, design_formula, alpha, correction_method, **kwargs):
+                genes = counts.columns
+                # Return different values each call
+                offset = len(genes) * 0.1
+                return pd.DataFrame(
+                    {
+                        "pvalue": np.arange(len(genes)) * offset,
+                        "padj": np.arange(len(genes)) * offset + 0.01,
+                        "stat": np.arange(len(genes)) * offset + 1.0,
+                        "log2FoldChange": np.arange(len(genes)) * offset - 1.0,
+                        "stat_sign": np.arange(len(genes)) * offset + 0.5,
+                    },
+                    index=genes,
+                )
+
+        adata = make_adata(
+            n_cells=120,
+            n_genes=20,
+            groups=["A", "B"],
+            group_counts=[60, 60],
+            replicate_key="donor",
+            replicate_values=(["d1"] * 30 + ["d2"] * 30) * 2,
+        )
+
+        pb_result = pseudobulk(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key="donor",
+            min_cells=10,
+        )
+
+        result = _run_de_pseudoreplicates(
+            pb_result=pb_result,
+            alpha=0.05,
+            correction_method="fdr_bh",
+            de_engine=MockEngine(),
+            required_samples={"query": 1, "reference": 1},
+            n_repetitions=2,
+            resampling_fraction=0.3,
+            rng=np.random.default_rng(42),
+            engine_name="mock",
+            engine_kwargs={},
+        )
+
+        # Final results should exist and be averaged
+        assert len(result.results) == 20
+        assert all(col in result.results.columns for col in ["pvalue", "padj", "stat"])
+
+    def test_combines_pseudoreplicates_with_existing_samples(self, make_adata):
+        """Should combine generated pseudoreplicates with existing samples."""
+        from scbulkde.pp import pseudobulk
+        from scbulkde.tl.tl_basic import _run_de_pseudoreplicates
+
+        metadata_sizes = []
+
+        class MockEngine:
+            def run(self, counts, metadata, design_matrix, design_formula, alpha, correction_method, **kwargs):
+                # Track how many samples are in each call
+                metadata_sizes.append(len(metadata))
+                genes = counts.columns
+                return pd.DataFrame(
+                    {
+                        "pvalue": np.full(len(genes), 0.01),
+                        "padj": np.full(len(genes), 0.05),
+                        "stat": np.full(len(genes), 2.0),
+                        "log2FoldChange": np.full(len(genes), 1.0),
+                        "stat_sign": np.full(len(genes), 2.0),
+                    },
+                    index=genes,
+                )
+
+        adata = make_adata(
+            n_cells=120,
+            n_genes=20,
+            groups=["A", "B"],
+            group_counts=[60, 60],
+            replicate_key="donor",
+            replicate_values=(["d1"] * 30 + ["d2"] * 30) * 2,
+        )
+
+        pb_result = pseudobulk(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key="donor",
+            min_cells=10,
+        )
+
+        # We have 2 existing samples, need 1 more per condition
+        _ = _run_de_pseudoreplicates(
+            pb_result=pb_result,
+            alpha=0.05,
+            correction_method="fdr_bh",
+            de_engine=MockEngine(),
+            required_samples={"query": 1, "reference": 1},
+            n_repetitions=1,
+            resampling_fraction=0.3,
+            rng=np.random.default_rng(42),
+            engine_name="mock",
+            engine_kwargs={},
+        )
+
+        # Should have combined existing + pseudoreplicates
+        # Original: 2 samples per condition = 4 total
+        # Added: 1 pseudoreplicate per condition = 2 total
+        # Expected: 6 samples
+        assert metadata_sizes[0] > len(pb_result.pb_counts)
+
+    def test_handles_collapsed_case(self, make_adata):
+        """Should handle collapsed case (no existing samples)."""
+        from scbulkde.pp import pseudobulk
+        from scbulkde.tl.tl_basic import _run_de_pseudoreplicates
+
+        class MockEngine:
+            def run(self, counts, metadata, design_matrix, design_formula, alpha, correction_method, **kwargs):
+                genes = counts.columns
+                return pd.DataFrame(
+                    {
+                        "pvalue": np.full(len(genes), 0.01),
+                        "padj": np.full(len(genes), 0.05),
+                        "stat": np.full(len(genes), 2.0),
+                        "log2FoldChange": np.full(len(genes), 1.0),
+                        "stat_sign": np.full(len(genes), 2.0),
+                    },
+                    index=genes,
+                )
+
+        adata = make_adata(
+            n_cells=100,
+            n_genes=20,
+            groups=["A", "B"],
+            group_counts=[50, 50],
+        )
+
+        # No replicate_key = collapsed case
+        pb_result = pseudobulk(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key=None,
+            min_cells=10,
+        )
+
+        # Should have 0 existing samples
+        assert len(pb_result.pb_counts) == 0
+
+        result = _run_de_pseudoreplicates(
+            pb_result=pb_result,
+            alpha=0.05,
+            correction_method="fdr_bh",
+            de_engine=MockEngine(),
+            required_samples={"query": 3, "reference": 3},
+            n_repetitions=2,
+            resampling_fraction=0.3,
+            rng=np.random.default_rng(42),
+            engine_name="mock",
+            engine_kwargs={},
+        )
+
+        # Should successfully generate pseudoreplicates
+        assert result.used_pseudoreplicates is True
+        assert len(result.results) == 20
+
+
+class TestRunDEDirect:
+    """Tests for direct DE execution on pseudobulk samples."""
+
+    def test_returns_correct_result_structure(self, make_adata):
+        """Should return DEResult with correct metadata."""
+        from scbulkde.pp import pseudobulk
+        from scbulkde.tl.tl_basic import _run_de_direct
+
+        class MockEngine:
+            def run(self, counts, metadata, design_matrix, design_formula, alpha, correction_method, **kwargs):
+                genes = counts.columns
+                return pd.DataFrame(
+                    {
+                        "pvalue": np.full(len(genes), 0.01),
+                        "padj": np.full(len(genes), 0.05),
+                        "stat": np.full(len(genes), 2.0),
+                        "log2FoldChange": np.full(len(genes), 1.0),
+                        "stat_sign": np.full(len(genes), 2.0),
+                    },
+                    index=genes,
+                )
+
+        adata = make_adata(
+            n_cells=180,
+            n_genes=30,
+            groups=["A", "B"],
+            group_counts=[90, 90],
+            replicate_key="donor",
+            replicate_values=(["d1"] * 30 + ["d2"] * 30 + ["d3"] * 30) * 2,
+        )
+
+        pb_result = pseudobulk(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key="donor",
+            min_cells=10,
+        )
+
+        result = _run_de_direct(
+            pb_result=pb_result,
+            alpha=0.05,
+            correction_method="fdr_bh",
+            de_engine=MockEngine(),
+            engine_name="mock",
+            engine_kwargs={},
+        )
+
+        # Validate DEResult structure
+        assert result.used_pseudoreplicates is False
+        assert result.used_single_cell is False
+        assert result.n_repetitions == 1
+        assert result.engine == "mock"
+        assert result.query == pb_result.query
+        assert result.reference == pb_result.reference
+        assert result.design == pb_result.design_formula
+
+        # Validate results DataFrame
+        assert len(result.results) == 30
+        assert all(col in result.results.columns for col in ["pvalue", "padj", "stat"])
+
+    def test_passes_engine_kwargs(self, make_adata):
+        """Should pass engine_kwargs to the DE engine."""
+        from scbulkde.pp import pseudobulk
+        from scbulkde.tl.tl_basic import _run_de_direct
+
+        kwargs_received = []
+
+        class MockEngine:
+            def run(self, counts, metadata, design_matrix, design_formula, alpha, correction_method, **kwargs):
+                kwargs_received.append(kwargs)
+                genes = counts.columns
+                return pd.DataFrame(
+                    {
+                        "pvalue": np.full(len(genes), 0.01),
+                        "padj": np.full(len(genes), 0.05),
+                        "stat": np.full(len(genes), 2.0),
+                        "log2FoldChange": np.full(len(genes), 1.0),
+                        "stat_sign": np.full(len(genes), 2.0),
+                    },
+                    index=genes,
+                )
+
+        adata = make_adata(
+            n_cells=180,
+            n_genes=30,
+            groups=["A", "B"],
+            group_counts=[90, 90],
+            replicate_key="donor",
+            replicate_values=(["d1"] * 30 + ["d2"] * 30 + ["d3"] * 30) * 2,
+        )
+
+        pb_result = pseudobulk(
+            adata,
+            group_key="cell_type",
+            query="A",
+            reference="B",
+            replicate_key="donor",
+            min_cells=10,
+        )
+
+        custom_kwargs = {"custom_param": 42}
+
+        _ = _run_de_direct(
+            pb_result=pb_result,
+            alpha=0.05,
+            correction_method="fdr_bh",
+            de_engine=MockEngine(),
+            engine_name="mock",
+            engine_kwargs=custom_kwargs,
+        )
+
+        # Verify custom kwargs were passed
+        assert len(kwargs_received) == 1
+        assert "custom_param" in kwargs_received[0]
+        assert kwargs_received[0]["custom_param"] == 42
