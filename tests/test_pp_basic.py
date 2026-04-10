@@ -304,22 +304,6 @@ class TestBuildPseudobulkResult:
         )
         return sample_stats
 
-    @pytest.fixture
-    def sample_stats_for_batch_donor(self, prepared_data):
-        """Create sample_stats DataFrame for batch+donor stratification."""
-        sample_stats = pd.DataFrame(
-            {
-                "psbulk_condition": ["query"] * 8 + ["reference"] * 6,
-                "batch": ["batch1"] * 4 + ["batch2"] * 4 + ["batch1"] * 3 + ["batch2"] * 3,
-                "donor": ["donor1", "donor2", "donor3", "donor4"] * 2 + ["donor1", "donor2", "donor3"] * 2,
-                "n_cells": [5] * 14,
-                "n_cells_condition": [40] * 8 + [30] * 6,
-                "fraction": [0.125] * 8 + [0.167] * 6,
-                "coverage": [1.0] * 14,
-            }
-        )
-        return sample_stats
-
     def test_pb_counts_has_samples(self, prepared_data, sample_stats_for_batch):
         """Test that pb_counts has rows (samples)."""
         adata_sub, obs = prepared_data

@@ -27,61 +27,28 @@ def make_adata():
         categorical_group_key: bool = True,
         seed: int = 42,
     ):
-        """Create a test AnnData object.
-
-        Parameters
-        ----------
-        n_cells : int
-            Number of cells.
-        n_genes : int
-            Number of genes.
-        group_key : str
-            Column name for group labels.
-        groups : list[str]
-            Group names. If None, defaults to ['A', 'B', 'C'].
-        group_counts : list[int]
-            Number of cells per group. If None, distributes evenly.
-        replicate_key : str
-            Column name for replicate labels.
-        replicate_values : list
-            Replicate values per cell. If None and replicate_key given, auto-generates.
-        categorical_covariates : dict
-            Additional categorical covariates {name: values_per_cell}.
-        continuous_covariates : dict
-            Additional continuous covariates {name: values_per_cell}.
-        sparse : bool
-            Whether to use sparse matrix for X.
-        layer_name : str
-            If provided, also create a layer with different values.
-        categorical_group_key : bool
-            Whether to make group_key categorical dtype.
-        """
         import anndata as ad
 
         if groups is None:
             groups = ["A", "B", "C"]
 
         if group_counts is None:
-            # Distribute cells evenly across groups
             base_count = n_cells // len(groups)
             remainder = n_cells % len(groups)
             group_counts = [base_count + (1 if i < remainder else 0) for i in range(len(groups))]
 
         assert sum(group_counts) == n_cells, "group_counts must sum to n_cells"
 
-        # Create group labels
         group_labels = []
         for g, count in zip(groups, group_counts, strict=True):
             group_labels.extend([g] * count)
 
-        # Create expression matrix
         rng = np.random.default_rng(seed)
         X = rng.poisson(5, size=(n_cells, n_genes)).astype(np.float32)
 
         if sparse:
             X = sp.csr_matrix(X)
 
-        # Create obs DataFrame
         obs_data = {group_key: group_labels}
 
         if categorical_group_key:
@@ -89,7 +56,6 @@ def make_adata():
 
         if replicate_key is not None:
             if replicate_values is None:
-                # Auto-generate replicate values
                 replicate_values = [f"rep_{i % 3}" for i in range(n_cells)]
             obs_data[replicate_key] = replicate_values
 
@@ -102,10 +68,7 @@ def make_adata():
                 obs_data[name] = values
 
         obs = pd.DataFrame(obs_data, index=[f"cell_{i}" for i in range(n_cells)])
-
-        # Create var DataFrame
         var = pd.DataFrame(index=[f"gene_{i}" for i in range(n_genes)])
-
         adata = ad.AnnData(X=X, obs=obs, var=var)
 
         if layer_name is not None:
@@ -129,7 +92,6 @@ def make_obs():
         condition_col: str = "psbulk_condition",
         strata: dict[str, dict[str, list]] | None = None,
     ):
-        """Create obs DataFrame with query/reference and flexible strata."""
         n_total = n_query + n_reference
         data = {condition_col: ["query"] * n_query + ["reference"] * n_reference}
 
@@ -140,6 +102,89 @@ def make_obs():
         return pd.DataFrame(data, index=[f"cell_{i}" for i in range(n_total)])
 
     return _make_obs
+
+
+@pytest.fixture
+def make_cell_pool():
+    """Factory fixture to create cell pool cache and usage tracker for pseudoreplicate tests."""
+
+    def _make_cell_pool(n_cells_per_sample: int = 20):
+        cell_pool = {
+            "query": [
+                (n_cells_per_sample, np.arange(0, n_cells_per_sample)),
+                (n_cells_per_sample, np.arange(n_cells_per_sample, 2 * n_cells_per_sample)),
+                (n_cells_per_sample, np.arange(2 * n_cells_per_sample, 3 * n_cells_per_sample)),
+            ],
+            "reference": [
+                (n_cells_per_sample, np.arange(3 * n_cells_per_sample, 4 * n_cells_per_sample)),
+                (n_cells_per_sample, np.arange(4 * n_cells_per_sample, 5 * n_cells_per_sample)),
+            ],
+        }
+        cell_usage = dict.fromkeys(range(5 * n_cells_per_sample), 0)
+        return cell_pool, cell_usage
+
+    return _make_cell_pool
+
+
+@pytest.fixture
+def make_mock_engine():
+    """Factory fixture to create a configurable MockEngine for DE tests.
+
+    The returned factory accepts an optional ``capture`` list. When provided,
+    each call to ``run()`` appends the full kwargs dict to that list, enabling
+    per-test assertions on what the engine received.
+    """
+
+    def _make_mock_engine(capture: list | None = None):
+        class MockEngine:
+            name = "mock"
+
+            def run(
+                self,
+                counts,
+                metadata,
+                design_matrix,
+                design_formula,
+                alpha,
+                correction_method,
+                gene_names=None,
+                **kwargs,
+            ):
+                if gene_names is not None:
+                    genes = gene_names
+                elif hasattr(counts, "columns"):
+                    genes = counts.columns
+                else:
+                    raise ValueError("Cannot determine gene names")
+
+                if capture is not None:
+                    capture.append(
+                        {
+                            "counts": counts,
+                            "metadata": metadata,
+                            "design_matrix": design_matrix,
+                            "design_formula": design_formula,
+                            "gene_names": gene_names,
+                            **kwargs,
+                        }
+                    )
+
+                n_genes = len(genes)
+                rng = np.random.RandomState(42)
+                return pd.DataFrame(
+                    {
+                        "pvalue": rng.uniform(0, 0.1, n_genes),
+                        "padj": rng.uniform(0, 0.1, n_genes),
+                        "stat": rng.uniform(1, 5, n_genes),
+                        "log2FoldChange": rng.uniform(-2, 2, n_genes),
+                        "stat_sign": rng.uniform(1, 5, n_genes),
+                    },
+                    index=genes,
+                )
+
+        return MockEngine()
+
+    return _make_mock_engine
 
 
 @pytest.fixture
