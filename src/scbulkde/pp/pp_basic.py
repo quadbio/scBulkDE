@@ -5,15 +5,15 @@ from typing import TYPE_CHECKING
 import pandas as pd
 from formulaic import model_matrix
 
-from scbulkde.ut._logging import logger
-from scbulkde.ut.containers import PseudobulkResult
-from scbulkde.ut.ut_basic import (
+from scbulkde.ut import (
+    PseudobulkResult,
     _aggregate_counts,
     _build_design_formula,
     _build_full_rank_design,
     _get_aggregation_function,
     _prepare_internal_groups,
     _validate_strata,
+    logger,
 )
 
 if TYPE_CHECKING:

@@ -1,6 +1,6 @@
+from ._containers import DEResult, PseudobulkResult
 from ._logging import _in_notebook, logger, set_log_level
 from ._performance import performance, set_performance_enabled
-from .containers import DEResult, PseudobulkResult
 from .ut_basic import (
     _aggregate_counts,
     _build_design_formula,
