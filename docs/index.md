@@ -7,7 +7,7 @@
 :maxdepth: 1
 
 installation.md
-api.md
+api/index.md
 changelog.md
 contributing.md
 references.md
