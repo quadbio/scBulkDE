@@ -1,17 +1,41 @@
 """Factory for creating differential expression engine instances."""
 
-from scbulkde.engines._parametric import AnovaEngine  # , EbayesEngine
+from scbulkde.engines._parametric import AnovaEngine
 from scbulkde.engines._pydeseq2 import PyDESeq2Engine
 from scbulkde.ut._logging import logger
 
 
 def get_engine_instance(engine_name: str):
-    """Create an instance of the specified differential expression engine."""
+    """
+    Create an instance of the specified differential expression engine.
+
+    Parameters
+    ----------
+    engine_name
+        Name of the DE engine to instantiate. Available options:
+        - 'pydeseq2': PyDESeq2 implementation of DESeq2
+        - 'anova': ANOVA-based linear model testing
+
+    Returns
+    -------
+    DEEngineBase
+        Instance of the requested differential expression engine.
+
+    Raises
+    ------
+    ValueError
+        If the specified engine name is not recognized.
+
+    Examples
+    --------
+    >>> from scbulkde.engines import get_engine_instance
+    >>> engine = get_engine_instance("anova")
+    >>> # Use engine for DE testing
+    """
     # Available DE engines
     engine_map = {
         "pydeseq2": PyDESeq2Engine,
         "anova": AnovaEngine,
-        # "ebayes": EbayesEngine,
     }
 
     engine_name_lower = engine_name.lower()

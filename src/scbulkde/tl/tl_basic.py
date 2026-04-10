@@ -29,7 +29,6 @@ if TYPE_CHECKING:
 
 def de(
     data: ad.AnnData | PseudobulkResult,
-    *,
     # pseudobulking parameters
     group_key: str | None = None,
     query: str | Sequence[str] | None = None,

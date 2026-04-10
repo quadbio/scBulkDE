@@ -1,58 +1,62 @@
+"""Logging utilities for scbulkde."""
+
 from __future__ import annotations
 
 import logging
+import sys
+from typing import TYPE_CHECKING
 
-from rich.console import Console
-from rich.logging import RichHandler
+if TYPE_CHECKING:
+    from typing import Literal
 
-from . import _constants as config
+# Create package-level logger
+logger = logging.getLogger("scbulkde")
+logger.setLevel(logging.INFO)
+
+# Add console handler if not already present
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    logger.addHandler(handler)
 
 
-def _in_notebook():
+def set_log_level(level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | int) -> None:
+    """
+    Set the logging level for scbulkde.
+
+    Parameters
+    ----------
+    level
+        Logging level. Can be a string ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
+        or an integer from the logging module.
+
+    Examples
+    --------
+    >>> import scbulkde as scb
+    >>> scb.ut.set_log_level("DEBUG")  # Enable debug logging
+    >>> scb.ut.set_log_level("WARNING")  # Only show warnings and errors
+    """
+    if isinstance(level, str):
+        level = getattr(logging, level.upper())
+    logger.setLevel(level)
+
+
+def _in_notebook() -> bool:
+    """
+    Check if code is running in a Jupyter notebook.
+
+    Returns
+    -------
+    bool
+        True if running in a notebook environment, False otherwise.
+    """
     try:
         from IPython import get_ipython
 
-        shell = get_ipython().__class__.__name__
-        return shell == "ZMQInteractiveShell"
-    except Exception:  # noqa: BLE001
+        if get_ipython() is None:
+            return False
+        if "IPKernelApp" in get_ipython().config:
+            return True
         return False
-
-
-def _setup_logger() -> logging.Logger:
-    """Set up the scbulkde logger with rich formatting."""
-    logger = logging.getLogger("scbulkde")
-    logger.setLevel(getattr(logging, config.LOG_LEVEL.upper()))
-
-    console = Console(force_terminal=True)
-    if console.is_jupyter is True:
-        console.is_jupyter = False
-
-    ch = RichHandler(
-        show_path=False,
-        console=console,
-        show_time=False,
-    )
-    logger.addHandler(ch)
-
-    # Prevent double outputs
-    logger.propagate = False
-    return logger
-
-
-def set_log_level(level):
-    """Set the logging level for scbulkde."""
-    if isinstance(level, str):
-        level_str = level.upper()
-        level_value = getattr(logging, level_str)
-    else:
-        level_value = level
-        level_str = logging.getLevelName(level_value)
-        if not isinstance(level_str, str):
-            level_str = "INFO"
-    logger.setLevel(level_value)
-    for handler in logger.handlers:
-        handler.setLevel(level_value)
-    config.LOG_LEVEL = level_str
-
-
-logger = _setup_logger()
+    except (ImportError, AttributeError):
+        return False
