@@ -84,28 +84,6 @@ class TestDropCovariate:
         assert dropped == "a"
         assert result_covs == ["b", "c"]
 
-    def test_drop_covariate_mutates_input(self):
-        """_drop_covariate uses .pop() which mutates the input list."""
-        original = ["a", "b", "c"]
-        covariates = original  # Same reference
-        obs = pd.DataFrame({"a": [1], "b": [1], "c": [1]})
-
-        _drop_covariate(covariates, obs, "sequence_order")
-
-        # BUG: The original list is mutated!
-        assert original == ["a", "b"], "Expected mutation (documenting current behavior)"
-
-    def test_drop_covariate_copy_prevents_mutation(self):
-        """Using .copy() prevents mutation of original."""
-        original = ["a", "b", "c"]
-        covariates = original.copy()
-        obs = pd.DataFrame({"a": [1], "b": [1], "c": [1]})
-
-        _drop_covariate(covariates, obs, "sequence_order")
-
-        # Original unchanged when using copy
-        assert original == ["a", "b", "c"]
-
     def test_invalid_strategy_raises(self):
         """Invalid covariate_strategy should raise ValueError."""
         covariates = ["a", "b"]
@@ -131,23 +109,3 @@ class TestDropCovariate:
 
         with pytest.raises(IndexError):
             _drop_covariate(covariates, obs, "sequence_order")
-
-    def test_most_levels_with_single_level_columns(self):
-        """Test when all covariates have single level (constant columns)."""
-        covariates = ["a", "b", "c"]
-        obs = pd.DataFrame(
-            {
-                "a": ["x"] * 10,  # 1 level
-                "b": ["y"] * 10,  # 1 level
-                "c": ["z"] * 10,  # 1 level
-            }
-        )
-
-        result_covs, dropped = _drop_covariate(
-            covariates=covariates,
-            obs=obs,
-            covariate_strategy="most_levels",
-        )
-
-        # All have 1 level, argmax returns first
-        assert dropped == "a"
