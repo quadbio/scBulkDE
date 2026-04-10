@@ -79,9 +79,13 @@ def de(
         Cell group(s) to be used as the query/test condition. Must be present
         in `adata.obs[group_key]`.
     reference
-        Cell group(s) to be used as the reference/control condition. If "rest", all groups not in `query` are used as reference. Must be present in `adata.obs[group_key]`.
+        Cell group(s) to be used as the reference/control condition. If "rest",
+        all groups not in `query` are used as reference.
+        Must be present in `adata.obs[group_key]`.
     replicate_key
-        Column name in `adata.obs` defining biological replicates. Required for creating multiple pseudobulk samples per condition, but never included in the design. If None, cells are not stratified by replicate.
+        Column name in `adata.obs` defining biological replicates. Required for
+        creating multiple pseudobulk samples per condition, but never included
+        in the design. If None, cells are not stratified by replicate.
     min_cells
         Minimum number of cells required per pseudobulk sample. Samples with fewer
         cells are excluded from analysis.
