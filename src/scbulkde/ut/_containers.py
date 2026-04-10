@@ -13,7 +13,63 @@ if TYPE_CHECKING:
 
 @dataclass
 class PseudobulkResult:
-    """Container for the results of a pseudobulking procedure."""
+    """Container for the results of a pseudobulking procedure.
+
+    Attributes
+    ----------
+    adata_sub : ad.AnnData
+        Subset of input AnnData containing only query and reference cells.
+    pb_counts : pd.DataFrame
+        Aggregated pseudobulk expression matrix (samples x genes). Empty if
+        no valid strata exist (collapsed case).
+    grouped : DataFrameGroupBy
+        Grouped observation data used for aggregation.
+    sample_table : pd.DataFrame
+        Metadata for each pseudobulk sample, including covariates, cell
+        counts, and quality metrics.
+    design_matrix : pd.DataFrame
+        Design matrix for statistical testing, created from
+        ``design_formula``.
+    design_formula : str
+        Patsy-style formula describing the statistical model.
+    group_key : str
+        Column name in ``adata.obs`` used to define cell groups.
+    group_key_internal : str
+        Internal column name for query/reference labels
+        (``'psbulk_condition'``).
+    query : Sequence[str]
+        Query group(s) used for the comparison.
+    reference : Sequence[str]
+        Reference group(s) used for the comparison.
+    strata : Sequence[str]
+        Final stratification factors used (may be a subset of requested
+        due to conflict resolution). Empty list indicates collapsed
+        pseudobulk.
+    layer : str or None
+        Layer in ``adata.layers`` used for aggregation, or ``None`` for
+        ``adata.X``.
+    layer_aggregation : str
+        Method used to aggregate expression values across cells
+        (``'sum'`` or ``'mean'``).
+    categorical_covariates : Sequence[str] or None
+        Categorical covariates included in the design.
+    continuous_covariates : Sequence[str] or None
+        Continuous covariates included in the design.
+    continuous_aggregation : str or None
+        Method used to aggregate continuous covariates per pseudobulk
+        sample.
+    min_cells : int or None
+        Minimum number of cells required per pseudobulk sample.
+    min_fraction : float or None
+        Minimum fraction of condition cells required per pseudobulk
+        sample.
+    min_coverage : float or None
+        Minimum coverage required per condition.
+    qualify_strategy : str
+        Strategy used for sample qualification (``'and'`` or ``'or'``).
+    n_cells : dict[str, int] or None
+        Number of cells per condition (``'query'`` and ``'reference'``).
+    """
 
     # Core outputs
     adata_sub: ad.AnnData
@@ -82,26 +138,31 @@ class DEResult:
 
     Attributes
     ----------
-    results
-        DE results with columns: log2FoldChange, pvalue, padj, baseMean.
-    query
+    results : pd.DataFrame
+        DE results table with columns: ``log2FoldChange``, ``pvalue``,
+        ``padj``, ``stat``, ``stat_sign``.
+    query : str
         Query condition name.
-    reference
+    reference : str or list[str]
         Reference condition name(s).
-    design
-        Design formula used.
-    engine
-        DE engine used.
-    used_pseudoreplicates
-        Whether pseudoreplicates were generated.
-    used_single_cell
-        Whether single-cell level testing was performed.
-    n_repetitions
-        Number of repetitions run (1 if no pseudoreplicates).
-    repetition_results
-        Per-repetition DE results (only if pseudoreplicates used).
-    repetition_stats
-        Per-repetition sample statistics (only if pseudoreplicates used).
+    design : str
+        Design formula used for testing.
+    engine : str
+        Name of the DE engine used (e.g. ``'anova'``, ``'pydeseq2'``).
+    used_pseudoreplicates : bool
+        Whether pseudoreplicates were generated to meet the minimum
+        sample requirement.
+    used_single_cell : bool
+        Whether single-cell level testing was performed as a fallback.
+    n_repetitions : int
+        Number of pseudoreplicate iterations run. 1 for direct testing,
+        >1 when pseudoreplicates are used.
+    repetition_results : dict[str, pd.DataFrame]
+        Per-repetition DE results. Only populated when pseudoreplicates
+        are used.
+    repetition_stats : dict[str, pd.DataFrame]
+        Per-repetition sample statistics. Only populated when
+        pseudoreplicates are used.
     """
 
     results: pd.DataFrame
@@ -161,7 +222,25 @@ class DEResult:
         return self.results.copy()
 
     def get_repetition_stats(self, repetition: int | str) -> pd.DataFrame:
-        """Get sample statistics for a specific repetition."""
+        """Get sample statistics for a specific repetition.
+
+        Parameters
+        ----------
+        repetition : int or str
+            The repetition index or key to retrieve.
+
+        Returns
+        -------
+        pd.DataFrame
+            Sample statistics for the requested repetition.
+
+        Raises
+        ------
+        ValueError
+            If no pseudoreplicates were used.
+        KeyError
+            If the specified repetition is not found.
+        """
         if not self.used_pseudoreplicates:
             raise ValueError("No pseudoreplicates were used.")
         key = str(repetition)
@@ -170,7 +249,25 @@ class DEResult:
         return self.repetition_stats[key].copy()
 
     def get_repetition_results(self, repetition: int | str) -> pd.DataFrame:
-        """Get DE results for a specific repetition."""
+        """Get DE results for a specific repetition.
+
+        Parameters
+        ----------
+        repetition : int or str
+            The repetition index or key to retrieve.
+
+        Returns
+        -------
+        pd.DataFrame
+            DE results for the requested repetition.
+
+        Raises
+        ------
+        ValueError
+            If no pseudoreplicates were used.
+        KeyError
+            If the specified repetition is not found.
+        """
         if not self.used_pseudoreplicates:
             raise ValueError("No pseudoreplicates were used.")
         key = str(repetition)

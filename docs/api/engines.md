@@ -22,7 +22,6 @@ be created by subclassing {class}`~scbulkde.engines.DEEngineBase`.
     :toctree: generated
 
     DEEngineBase
-    DEEngineBase.run
 ```
 
 ## Built-in Engines
@@ -32,7 +31,5 @@ be created by subclassing {class}`~scbulkde.engines.DEEngineBase`.
     :toctree: generated
 
     AnovaEngine
-    AnovaEngine.run
     PyDESeq2Engine
-    PyDESeq2Engine.run
 ```
