@@ -174,10 +174,6 @@ def pseudobulk(
     - Removes samples not meeting quality thresholds
     - Resolves confounded covariates to ensure full-rank design
     - Creates both count matrix and metadata for downstream analysis
-
-    References
-    ----------
-    .. [1] Squair, J.W., et al. "Confronting false discoveries in single-cell differential expression." Nature Communications 12, 5692 (2021).
     """
     group_key_internal = "psbulk_condition"
 

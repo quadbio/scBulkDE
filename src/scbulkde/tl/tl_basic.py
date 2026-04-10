@@ -79,14 +79,9 @@ def de(
         Cell group(s) to be used as the query/test condition. Must be present
         in `adata.obs[group_key]`.
     reference
-        Cell group(s) to be used as the reference/control condition. If "rest",
-        all groups not in `query` are used as reference. Must be present in
-        `adata.obs[group_key]`.
+        Cell group(s) to be used as the reference/control condition. If "rest", all groups not in `query` are used as reference. Must be present in `adata.obs[group_key]`.
     replicate_key
-        Column name in `adata.obs` defining biological replicates (e.g., 'sample_id',
-        'donor', 'batch'). Required for creating multiple pseudobulk samples per
-        condition, but never included in the design. If None, cells are not stratified
-        by replicate.
+        Column name in `adata.obs` defining biological replicates. Required for creating multiple pseudobulk samples per condition, but never included in the design. If None, cells are not stratified by replicate.
     min_cells
         Minimum number of cells required per pseudobulk sample. Samples with fewer
         cells are excluded from analysis.
@@ -208,11 +203,6 @@ def de(
     Examples
     --------
     n.a.
-
-    References
-    ----------
-    .. [1] Squair, J.W., et al. "Confronting false discoveries in single-cell differential expression." Nature Communications 12, 5692 (2021).
-    .. [2] Love, M.I., Huber, W. & Anders, S. "Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2." Genome Biology 15, 550 (2014).
     """
     if engine_kwargs is None:
         engine_kwargs = {}
