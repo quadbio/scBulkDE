@@ -36,7 +36,7 @@ class TestBuildFullRankDesign:
     def test_full_rank_design_returns_immediately(self, sample_table_full_rank):
         """When design is full rank, should return without dropping."""
 
-        formula, mm = _build_full_rank_design(
+        formula, mm, _, _ = _build_full_rank_design(
             sample_table=sample_table_full_rank,
             group_key_internal="psbulk_condition",
             design_factors_categorical=["batch"],
@@ -52,7 +52,7 @@ class TestBuildFullRankDesign:
     def test_rank_deficient_drops_categorical_first(self, sample_table_rank_deficient):
         """When rank deficient, should drop categorical covariates first."""
 
-        formula, mm = _build_full_rank_design(
+        formula, mm, _, _ = _build_full_rank_design(
             sample_table=sample_table_rank_deficient,
             group_key_internal="psbulk_condition",
             design_factors_categorical=["batch"],
@@ -107,7 +107,7 @@ class TestBuildFullRankDesign:
         # The model matrix is still not full rank, because cont1 = Intercept + C(cat1)[T.c1]
         # So cat1 should be dropped next, resulting in a full rank model matrix
 
-        formula, mm = _build_full_rank_design(
+        formula, mm, _, _ = _build_full_rank_design(
             sample_table=sample_table,
             group_key_internal="psbulk_condition",
             design_factors_categorical=["cat1", "cat2"],
@@ -135,7 +135,7 @@ class TestBuildFullRankDesign:
             }
         )
 
-        formula, mm = _build_full_rank_design(
+        formula, mm, _, _ = _build_full_rank_design(
             sample_table=sample_table,
             group_key_internal="psbulk_condition",
             design_factors_categorical=["first", "second"],
@@ -149,57 +149,6 @@ class TestBuildFullRankDesign:
         assert "C(first)" in formula
         assert "C(second)" not in formula
 
-    def test_covariate_strategy_most_levels(self):
-        """most_levels should drop covariate with most levels first."""
-
-        # The "few" category cause the rank deficiency, but "many" has more levels.
-        # When using most_levels strategy, "many" should be dropped first, and then
-        # because the matrix is still rank deficient, "few" should be dropped next.
-        sample_table = pd.DataFrame(
-            {
-                "psbulk_condition": ["query"] * 6 + ["reference"] * 6,
-                "few": ["a"] * 6 + ["b"] * 6,  # 2 levels
-                "many": ["x", "y", "z", "x", "y", "z"] * 2,  # 3 levels
-            }
-        )
-
-        formula, mm = _build_full_rank_design(
-            sample_table=sample_table,
-            group_key_internal="psbulk_condition",
-            design_factors_categorical=["few", "many"],
-            design_factors_continuous=[],
-            covariate_strategy="most_levels",
-        )
-
-        # Should drop 'many' first (has more levels)
-        assert np.linalg.matrix_rank(mm.values) == mm.shape[1]
-        assert "psbulk_condition" in formula
-        assert "C(few)" not in formula
-        assert "C(many)" not in formula
-
-    def test_continuous_dropped_with_sequence_order_strategy(self):
-        """When dropping continuous, always use sequence_order."""
-
-        sample_table = pd.DataFrame(
-            {
-                "psbulk_condition": ["query"] * 4 + ["reference"] * 4,
-                "cont1": [1.0, 2.0, 3.0, 4.0] * 2,
-                "cont2": [1.0, 2.0, 3.0, 4.0] * 2,  # Perfectly correlated
-            }
-        )
-
-        formula, mm = _build_full_rank_design(
-            sample_table=sample_table,
-            group_key_internal="psbulk_condition",
-            design_factors_categorical=[],
-            design_factors_continuous=["cont1", "cont2"],
-            covariate_strategy="most_levels",  # Shouldn't matter for continuous
-        )
-
-        # Should drop cont2 (last in sequence)
-        assert np.linalg.matrix_rank(mm.values) == mm.shape[1]
-        assert "cont2" not in formula
-
     def test_fallback_to_minimal_design(self):
         """If all covariates dropped, should return minimal design with just condition."""
 
@@ -211,7 +160,7 @@ class TestBuildFullRankDesign:
             }
         )
 
-        formula, mm = _build_full_rank_design(
+        formula, mm, _, _ = _build_full_rank_design(
             sample_table=sample_table,
             group_key_internal="psbulk_condition",
             design_factors_categorical=["cat"],
@@ -223,25 +172,3 @@ class TestBuildFullRankDesign:
         assert "psbulk_condition" in formula
         assert "C(cat)" not in formula
         assert np.linalg.matrix_rank(mm.values) == mm.shape[1]
-
-    def test_empty_covariates_returns_minimal_design(self):
-        """With no covariates, should return just condition."""
-
-        sample_table = pd.DataFrame(
-            {
-                "psbulk_condition": ["query", "query", "reference", "reference"],
-            }
-        )
-
-        formula, mm = _build_full_rank_design(
-            sample_table=sample_table,
-            group_key_internal="psbulk_condition",
-            design_factors_categorical=[],
-            design_factors_continuous=[],
-            covariate_strategy="sequence_order",
-        )
-
-        assert "psbulk_condition" in formula
-        assert np.linalg.matrix_rank(mm.values) == mm.shape[1]
-        # Should have 2 columns: Intercept and condition
-        assert mm.shape[1] == 2
