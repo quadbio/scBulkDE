@@ -1,12 +1,7 @@
-"""Test suite for pseudobulk, _build_empty_pseudobulk_result, and _build_pseudobulk_result.
-
-These tests are designed based on expected logical behavior, not just to pass based on
-current implementation. Tests may fail if there are bugs in the implementation.
-"""
+"""Tests for functions in the pp module."""
 
 from __future__ import annotations
 
-# Assume these imports work in the test environment
 import numpy as np
 import pandas as pd
 import pytest
