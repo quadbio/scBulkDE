@@ -67,90 +67,90 @@ def de(
 
     Parameters
     ----------
-    data : ad.AnnData or PseudobulkResult
+    data
         Input data. Either an AnnData object (will be pseudobulked automatically)
         or a pre-computed PseudobulkResult from `pp.pseudobulk()`.
-    group_key : str
+    group_key
         Column name in `adata.obs` that defines the cell groups for comparison
         (e.g., 'cell_type', 'condition', 'cluster').
-    query : str or Sequence[str]
+    query
         Cell group(s) to be used as the query/test condition. Must be present
         in `adata.obs[group_key]`.
-    reference : str or Sequence[str], default="rest"
+    reference
         Cell group(s) to be used as the reference/control condition. If "rest",
         all groups not in `query` are used as reference. Must be present in
         `adata.obs[group_key]`.
-    replicate_key : str, optional
+    replicate_key
         Column name in `adata.obs` defining biological replicates (e.g., 'sample_id',
         'donor', 'batch'). Required for creating multiple pseudobulk samples per
         condition, but never included in the design. If None, cells are not stratified
         by replicate.
-    min_cells : int, optional, default=50
+    min_cells
         Minimum number of cells required per pseudobulk sample. Samples with fewer
         cells are excluded from analysis.
-    min_fraction : float, optional, default=0.2
+    min_fraction
         Minimum fraction of cells of the condition in that pseudobulk sample for it
         to be considered valid. Samples with a lower fraction are excluded from analysis.
-    min_coverage : float, optional, default=0.75
+    min_coverage
         Minimum coverage provided by all valid samples per condition. Conditions with
         lower coverage are collapsed. Range: [0.0, 1.0].
-    categorical_covariates : Sequence[str], optional
+    categorical_covariates
         Column names in `adata.obs` representing categorical covariates to include
         in the design (e.g., ['experiment', 'chemistry', 'batch']). These are added as
         stratification factors along with `replicate_key`.
-    continuous_covariates : Sequence[str], optional
+    continuous_covariates
         Column names in `adata.obs` representing continuous covariates to include
         in the design (e.g., ['cellcycle', 'pct_mito']). These are aggregated
         per pseudobulk sample.
-    continuous_aggregation : {"mean", "sum", "median"} or callable, default="mean"
+    continuous_aggregation
         Method to aggregate continuous covariates across cells within each
         pseudobulk sample. Can be a string specifying a standard aggregation
         or a custom callable.
-    layer : str, optional
+    layer
         Layer in `adata.layers` to use for aggregation. If None, uses `adata.X`.
-    layer_aggregation : {"sum", "mean"}, default="sum"
+    layer_aggregation
         Method to aggregate expression values across cells.
-    qualify_strategy : {"and", "or"}, default="or"
+    qualify_strategy
         Strategy for sample qualification when multiple criteria are specified:
         - "and": Sample candidate must pass both `min_cells` AND `min_fraction` thresholds
         - "or": Samples candidate must pass either `min_cells` OR `min_fraction` threshold
-    covariate_strategy : {"sequence_order", "most_levels"}, default="sequence_order"
+    covariate_strategy
         Strategy for ordering covariates in the design formula when conflicts arise:
         - "sequence_order": Drop covariates from back to front in the provided list
         - "most_levels": Prioritize covariates with more unique levels
-    resolve_conflicts : bool, default=True
+    resolve_conflicts
         If True, automatically resolve confounded covariates by iteratively
         removing them to ensure a full-rank design matrix. If False, raise
         an error when confounding is detected.
-    n_repetitions : int, default=3
+    n_repetitions
         Number of pseudoreplicate iterations to generate.
-    resampling_fraction : float, default=0.6
+    resampling_fraction
         Fraction of cells to sample (with replacement) from a valid pseudobulk
         to generate a pseudoreplicate.
-    min_samples : int, default=3
+    min_samples
         Minimum number of pseudobulk samples required per condition for direct
         DE testing. If fewer exist, falls back according to `fallback_strategy`.
-    alpha : float, default=0.05
+    alpha
         Significance threshold for direct pseudobulk DE testing.
-    alpha_fallback : float, optional, default=0.05
+    alpha_fallback
         Separate significance threshold for fallback methods (pseudoreplicates
         or single-cell). If None, uses `alpha`.
-    correction_method : str, default="fdr_bh"
+    correction_method
         Multiple testing correction method. Options include:
         - 'fdr_bh': Benjamini-Hochberg FDR (recommended)
         - 'bonferroni': Bonferroni correction
         - Others supported by `statsmodels.stats.multitest.multipletests`
-    engine : str, default="anova"
+    engine
         Statistical engine for DE testing. Available engines are 'pydeseq2' and 'anova'
-    engine_kwargs : dict, optional
+    engine_kwargs
         Additional keyword arguments passed to the DE engine.
-    fallback_strategy : {"pseudoreplicates", "single_cell", None}, default="pseudoreplicates"
+    fallback_strategy
         Strategy when fewer than `min_samples` exist per condition:
         - 'pseudoreplicates': Generate synthetic replicates by resampling cells
           and run multiple DE tests, aggregating results
         - 'single_cell': Perform DE at single-cell resolution using all cells
         - None: Raise an error if insufficient samples
-    seed : int, default=42
+    seed
         Random seed for reproducibility of pseudoreplicate generation.
 
     Returns
@@ -202,12 +202,6 @@ def de(
       cells are sampled, the independence assumption may still be violated.
     - Results from fallback strategies should be interpreted with caution and
       ideally validated with independent biological replicates
-
-    See Also
-    --------
-    pp.pseudobulk : Perform pseudobulking without DE testing
-    rank_genes_groups : Perform multi-group DE analysis
-    DEResult : Container class for DE results
 
     Examples
     --------
