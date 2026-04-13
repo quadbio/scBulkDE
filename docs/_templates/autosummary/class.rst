@@ -13,7 +13,8 @@ Attributes table
 
 .. autosummary::
 {% for item in attributes %}
-    ~{{ name }}.{{ item }}
+.. autoattribute:: {{ [objname, item] | join(".") }}
+   :no-index:
 {%- endfor %}
 {% endif %}
 {% endblock %}
