@@ -47,7 +47,7 @@ def rank_genes_groups(
     de_kwargs,
 ) -> AnnData | None:
     """
-    Scanpy drop-in replacement for differential expression analysis.
+    Pseudobulked differential expression analysis that interfaces with scanpy.
 
     This is a drop-in replacement for scanpy.tl.rank_genes_groups that uses
     pseudobulk aggregation followed by differential expression testing instead
