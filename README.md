@@ -1,12 +1,12 @@
 # scBulkDE
 
-![Tests][badge-tests]
-![Documentation][badge-docs]
-![Coverage][badge-coverage]
-![PyPI][badge-pypi]
+[![Tests][badge-tests]][tests]
+[![Documentation][badge-docs]][documentation]
+[![Coverage][badge-coverage]][coverage]
+[![PyPI][badge-pypi]][pypi]
 
-[badge-tests]: https://img.shields.io/github/actions/workflow/status/quadbio/scBulkDE/test.yaml?branch=main
-[badge-docs]: https://img.shields.io/readthedocs/scBulkDE
+[badge-tests]: https://img.shields.io/github/actions/workflow/status/quadbio/scbulkde/test.yaml?branch=main
+[badge-docs]: https://img.shields.io/readthedocs/scbulkde
 [badge-coverage]: https://codecov.io/gh/quadbio/scbulkde/branch/main/graph/badge.svg
 [badge-pypi]: https://img.shields.io/pypi/v/scbulkde.svg
 
