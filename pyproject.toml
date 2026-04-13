@@ -4,7 +4,7 @@ requires = [ "hatchling" ]
 
 [project]
 name = "scbulkde"
-version = "0.0.1"
+version = "0.0.2"
 description = "Performing differential testing on pseudobulked single-cell data"
 readme = "README.md"
 license = { file = "LICENSE" }
