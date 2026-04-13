@@ -17,5 +17,5 @@ __pycache__/
 /.coverage*
 
 # docs
-/docs/generated/
+/docs/api/generated/
 /docs/_build/
