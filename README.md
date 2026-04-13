@@ -1,11 +1,13 @@
 # scBulkDE
 
-[![Tests][badge-tests]][tests]
-[![Documentation][badge-docs]][documentation]
-[![PyPI][badge-pypi]][pypi]
+![Tests][badge-tests]
+![Documentation][badge-docs]
+![Coverage][badge-coverage]
+![PyPI][badge-pypi]
 
 [badge-tests]: https://img.shields.io/github/actions/workflow/status/quadbio/scBulkDE/test.yaml?branch=main
 [badge-docs]: https://img.shields.io/readthedocs/scBulkDE
+[badge-coverage]: https://codecov.io/gh/quadbio/scbulkde/branch/main/graph/badge.svg
 [badge-pypi]: https://img.shields.io/pypi/v/scbulkde.svg
 
 scBulkDE performs differential expression testing on pseudobulked single-cell data. It aggregates cells into pseudobulk samples, infers a full-rank design matrix and performs differential gene expression analysis while accounting for categorical and continuous covariates. Currently PyDeseq2 and ANOVA backends are supported for DE testing.
