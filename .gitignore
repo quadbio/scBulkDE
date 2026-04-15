@@ -19,3 +19,6 @@ __pycache__/
 # docs
 /docs/api/generated/
 /docs/_build/
+
+# other
+/benchmark/
