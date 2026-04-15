@@ -26,13 +26,8 @@ def _prepare_internal_groups(
     query: str | Sequence[str],
     reference: str | Sequence[str],
 ) -> pd.DataFrame:
-    """Prepare adata.obs with internal 'query' and 'reference' labels."""
-    # View
-    obs = adata.obs
-
-    # Ensure correct datatypes. Move later to validation
-    if not isinstance(obs[group_key].dtype, pd.CategoricalDtype):
-        obs[group_key] = obs[group_key].astype("category")
+    """Prepare adata.obs with internal 'query' and 'reference' labels without mutating adata.obs."""
+    obs_full = adata.obs  # view/read-only: do not assign into this
 
     # Normalize inputs to lists
     if isinstance(query, str):
@@ -40,8 +35,18 @@ def _prepare_internal_groups(
     else:
         query = list(query)
 
+    # Work on a Series for the group column so we don't mutate adata.obs
+    s = obs_full[group_key]
+
+    if isinstance(s.dtype, pd.CategoricalDtype):
+        s_cat = s
+    else:
+        s_cat = s.astype("category")
+
+    # Resolve 'reference="rest"' using categories if available, otherwise unique values
     if reference == "rest":
-        reference = [cat for cat in obs[group_key].cat.categories if cat not in query]
+        all_cats = list(s_cat.cat.categories)
+        reference = [cat for cat in all_cats if cat not in query]
     elif isinstance(reference, str):
         reference = [reference]
     else:
@@ -54,9 +59,9 @@ def _prepare_internal_groups(
             f"Detected overlap between query and reference: {overlap}. Cells in these groups will be assigned to 'query'."
         )
 
-    # Subset obs to relevant cells, make a copy
-    mask_query = obs[group_key].isin(query)
-    mask_reference = obs[group_key].isin(reference)
+    # Build masks
+    mask_query = s_cat.isin(query)
+    mask_reference = s_cat.isin(reference)
 
     if not mask_query.any():
         raise ValueError(f"No cells found for query groups: {query}")
@@ -64,7 +69,9 @@ def _prepare_internal_groups(
         raise ValueError(f"No cells found for reference groups: {reference}")
 
     mask = mask_query | mask_reference
-    obs = obs[mask].copy()
+
+    # Now here we can make a copy because the obs is smaller in the best case
+    obs = obs_full[mask].copy()
 
     obs[group_key_internal] = np.where(obs[group_key].isin(query), "query", "reference")
 

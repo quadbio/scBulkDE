@@ -108,7 +108,7 @@ class TestPrepareInternalGroups:
         b_cells = obs[obs["cell_type"] == "B"]
         assert all(b_cells["psbulk_condition"] == "query")
 
-    def test_non_categorical_group_key_converted(self, make_adata):
+    def test_non_categorical_group_key(self, make_adata):
         """Ensure non-categorical group_key is converted properly."""
         adata = make_adata(
             n_cells=60,
@@ -128,8 +128,8 @@ class TestPrepareInternalGroups:
             reference="rest",
         )
 
-        # Check that it has been converted to categorical
-        assert isinstance(adata.obs["cell_type"].dtype, pd.CategoricalDtype)
+        # Check that original adata is not mutated
+        assert not isinstance(adata.obs["cell_type"].dtype, pd.CategoricalDtype)
 
         # Check proper output
         assert "psbulk_condition" in obs.columns
