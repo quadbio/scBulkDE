@@ -66,7 +66,11 @@ class AnovaEngine(DEEngineBase):
 
             # F-statistic
             eps = 1e-20
-            F = ((rss_reduced - rss_full) / (rss_full + eps)) * ((n - p_full) / q)
+
+            num = (rss_reduced - rss_full) / q
+            denom = np.maximum(rss_full / (n - p_full), eps)
+            F = num / denom
+
             pvals = stats.f.sf(F, q, n - p_full)
 
             results = pd.DataFrame(
