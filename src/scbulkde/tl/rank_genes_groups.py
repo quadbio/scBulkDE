@@ -217,7 +217,7 @@ def rank_genes_groups(
 
     # This is currently not ideal and based on that I set the default correction
     # method to benjamini hochberg in the engines
-    corr_method = de_kwargs.get("corr_method", "bh")
+    corr_method = de_kwargs.get("correction_method", "bh_fdr")
 
     adata.uns[key_added] = {}
     adata.uns[key_added]["params"] = {
