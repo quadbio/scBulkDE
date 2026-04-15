@@ -530,7 +530,7 @@ def _select_groups(
 
     This is an exact copy of the select_groups function from scanpy:
     https://github.com/scverse/scanpy/blob/cf8b46dea735c35a629abfaa2e1bab9047281e34/src/scanpy/_utils/__init__.py#L839-L886
-    In line 875 the logger was replaced with a simple print statement.
+    In line 875 the logger was replaced with raising a value error, also avoiding sys.exit(0).
     """
     groups_order = adata.obs[key].cat.categories
     if f"{key}_masks" in adata.uns:
@@ -558,13 +558,10 @@ def _select_groups(
                 )
             )[0]
         if len(groups_ids) == 0:
-            print(
+            raise ValueError(
                 f"{np.array(groups_order_subset)} invalid! specify valid "
-                f"groups_order (or indices) from {adata.obs[key].cat.categories}",
+                f"groups_order (or indices) from {adata.obs[key].cat.categories}"
             )
-            from sys import exit
-
-            exit(0)
         groups_masks_obs = groups_masks_obs[groups_ids]
         groups_order_subset = adata.obs[key].cat.categories[groups_ids].values
     else:
