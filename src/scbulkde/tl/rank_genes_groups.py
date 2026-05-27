@@ -291,7 +291,7 @@ def rank_genes_groups(
             idx = pd.MultiIndex.from_tuples([(str(group), "names")])
             stats = pd.DataFrame(columns=idx)
 
-        var_names = res.index
+        res.index = var_names
 
         stats[(str(group), "names")] = var_names[top_idx]
         stats[(str(group), "scores")] = scores[top_idx]
